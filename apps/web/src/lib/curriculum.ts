@@ -35,6 +35,10 @@ export const TRACKS = [
       { slug: "B1-backend-jwt-lifecycle",  title: "B1: JWT Lifecycle",      level: "Intermediate", time: "1.5 hrs", desc: "The math behind JWTs. Symmetric vs Asymmetric signing. Secret rotation." },
       { slug: "B2-backend-token-rotation", title: "B2: Token Rotation",     level: "Advanced",     time: "2 hrs",   desc: "The database schema and algorithms behind secure token rotation." },
       { slug: "B3-cors-configuration",     title: "B3: CORS",               level: "Intermediate", time: "1 hr",    desc: "Origin policy, preflight requests, credentials mode, and configuration." },
+      { slug: "B4-sessions-vs-jwt",        title: "B4: Sessions vs JWT",    level: "Intermediate", time: "2 hrs",   desc: "Why Prisma has a Session model. Stateful vs stateless. Revocation, cleanup, and the 15-min gap." },
+      { slug: "B5-redis-for-auth",         title: "B5: Redis for Auth",     level: "Advanced",     time: "2.5 hrs", desc: "Rate limiting, token blocklists, session caching, and short-lived tokens with Redis TTLs." },
+      { slug: "B6-multi-client-api",       title: "B6: Multi-Client API",   level: "Advanced",     time: "2.5 hrs", desc: "One API for browsers (cookies), mobile (Bearer tokens), and services (API keys) with scoped access." },
+      { slug: "B7-complete-database-schema", title: "B7: Complete DB Schema", level: "Intermediate", time: "1 hr",   desc: "Every auth Prisma model with annotated fields, indexes, relations, and Postgres vs Redis decision guide." },
     ]
   },
   {
@@ -48,6 +52,8 @@ export const TRACKS = [
     milestones: [
       { slug: "F1-frontend-fetch-interceptor", title: "F1: Fetch Interceptor", level: "Advanced",     time: "2 hrs",   desc: "Handling 401s, concurrency locks, and replay attack responses." },
       { slug: "F2-frontend-token-storage",     title: "F2: Token Storage",     level: "Intermediate", time: "1.5 hrs", desc: "Memory vs Cookies. Why localStorage is banned. State architecture." },
+      { slug: "F3-nextjs-frontend-auth-complete", title: "F3: Next.js Auth — Complete", level: "Advanced", time: "3 hrs", desc: "Server vs client fetch utilities, AuthContext, middleware, role-based UI, login flow, and token refresh from end to end." },
+      { slug: "F4-nextjs-server-actions",    title: "F4: Server Actions",     level: "Advanced",     time: "2 hrs",   desc: "Next.js 14/15 Server Actions for login, signup, logout, and profile mutations with cookie forwarding and Zod validation." },
     ]
   },
   {
@@ -59,9 +65,10 @@ export const TRACKS = [
     badge: "bg-rose-400/10 text-rose-400",
     desc: "High-level system design and architectural patterns.",
     milestones: [
-      { slug: "A1-architecture-oauth-patterns", title: "A1: OAuth Patterns",      level: "Expert", time: "1.5 hrs", desc: "Backend-first vs Frontend-first vs BFF pattern analysis." },
-      { slug: "A2-bff-pattern",                 title: "A2: Backend For Frontend", level: "Expert", time: "2.5 hrs", desc: "Building a full BFF: proxy middleware, microservice auth, RS256 keys." },
-      { slug: "A3-native-client-token-transport", title: "A3: Native Clients",     level: "Advanced", time: "1 hr",  desc: "Supporting mobile and desktop apps with Bearer tokens while browsers keep cookies." },
+      { slug: "A1-architecture-oauth-patterns", title: "A1: OAuth Patterns",      level: "Expert",   time: "1.5 hrs", desc: "Backend-first vs Frontend-first vs BFF pattern analysis." },
+      { slug: "A2-bff-pattern",                 title: "A2: Backend For Frontend", level: "Expert",   time: "2.5 hrs", desc: "Building a full BFF: proxy middleware, microservice auth, RS256 keys." },
+      { slug: "A3-native-client-token-transport", title: "A3: Native Clients",     level: "Advanced", time: "1.5 hrs", desc: "Supporting mobile and desktop apps with Bearer tokens while browsers keep cookies." },
+      { slug: "A4-complete-auth-architecture",  title: "A4: System Architecture", level: "Expert",   time: "1 hr",   desc: "Complete system map: every flow from login to remote revocation. The capstone reference document." },
     ]
   }
 ];
