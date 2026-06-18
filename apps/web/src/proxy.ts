@@ -22,9 +22,12 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-// Define which routes need which state
+// Only these routes require authentication
 const protectedRoutes = ["/dashboard", "/admin", "/settings"];
+// These routes redirect logged-in users away (to dashboard)
 const authRoutes = ["/login", "/signup"];
+// These are always public — never redirect
+const publicRoutes = ["/", "/learn"];
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
