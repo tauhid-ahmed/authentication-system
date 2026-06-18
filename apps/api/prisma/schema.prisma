@@ -1,0 +1,153 @@
+// ============================================================
+// PRISMA SCHEMA — Auth Learning System
+// ============================================================
+// This is the SINGLE SOURCE OF TRUTH for your database structure.
+//
+// WHY PRISMA?
+// -----------
+// Without Prisma: Write raw SQL, manage migrations manually, no type safety.
+// With Prisma:    TypeScript types auto-generated from schema, safe migrations,
+//                 readable query API, works with any SQL database.
+//
+// DATABASE PROVIDER: Neon (serverless PostgreSQL)
+// HOW TO SWITCH: Change `provider = "postgresql"` to `"mysql"` or `"sqlite"`
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+// ENUMS are not supported in SQLite, so we use Strings instead in the database.
+// Roles: USER, ADMIN, SUPER_ADMIN
+// AuditEvents: LOGIN_SUCCESS, LOGIN_FAILED, LOGOUT, SIGNUP, TOKEN_REFRESH, TOKEN_REUSE_DETECTED, ROLE_CHANGED, SESSION_REVOKED, PASSWORD_CHANGED, OAUTH_LOGIN
+
+// ============================================================
+// USER MODEL
+// ============================================================
+// WHY passwordHash is optional?
+// --------
+// OAuth users (Google login) don't have a password.
+// They authenticate via OAuth provider, not credentials.
+// This design supports BOTH credential users AND OAuth users.
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  passwordHash  String?        // Null for OAuth-only users
+  name          String?
+  role          String         @default("USER")
+  emailVerified Boolean        @default(false)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  // Relations
+  sessions      Session[]
+  oauthAccounts OAuthAccount[]
+  auditLogs     AuditLog[]
+
+  @@index([email])
+}
+
+// ============================================================
+// SESSION MODEL (Refresh Token Storage)
+// ============================================================
+// WHY store refresh tokens in DB?
+// --------
+// Access tokens are STATELESS (validated by signature alone — no DB).
+// Refresh tokens are STATEFUL (must be in DB to be revocable).
+//
+// If someone steals your refresh token, we can:
+//   1. Delete it from DB → attacker's token immediately worthless
+//   2. Revoke ALL sessions for a user (nuclear option if breach detected)
+//
+// ANALOGY: Access token = hotel room keycard (works until expired).
+//          Refresh token = hotel reservation (can be cancelled at the front desk).
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The actual refresh token value (hashed for storage security)
+  // WHY hash? If your DB is compromised, raw tokens can't be used.
+  refreshToken String   @unique
+
+  // Device tracking — for M11 (Session Management)
+  deviceInfo   String?  // Parsed device description: "Chrome on macOS"
+  ipAddress    String?  // For anomaly detection
+  userAgent    String?  // Full user-agent string
+
+  // State
+  isRevoked    Boolean  @default(false)
+  expiresAt    DateTime // 30 days from creation
+  createdAt    DateTime @default(now())
+  lastUsedAt   DateTime @default(now())  // Updated on each successful refresh
+
+  @@index([userId])
+  @@index([refreshToken])
+}
+
+// ============================================================
+// OAUTH ACCOUNT MODEL
+// ============================================================
+// WHY a separate model?
+// --------
+// One user can link multiple OAuth providers:
+//   - user@gmail.com via Google
+//   - user@github.com via GitHub (future)
+// A User:OAuthAccount = 1:many relationship handles this cleanly.
+model OAuthAccount {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  provider          String    // "google", "github", etc.
+  providerAccountId String    // The ID from the OAuth provider
+
+  // Provider tokens — stored for potential API calls (e.g., Google Calendar)
+  accessToken       String?
+  refreshToken      String?
+  expiresAt         DateTime?
+
+  createdAt         DateTime  @default(now())
+
+  @@unique([provider, providerAccountId]) // Same provider account can only link once
+  @@index([userId])
+}
+
+// ============================================================
+// AUDIT LOG MODEL
+// ============================================================
+// WHY audit logging?
+// --------
+// 1. Security compliance: Know WHO did WHAT from WHERE at WHEN.
+// 2. Incident response: When something goes wrong, trace the attack.
+// 3. Anomaly detection: 50 failed logins from same IP = alert.
+// 4. User accountability: "I didn't change that role" → audit log proves it.
+//
+// REAL-WORLD: Stripe, GitHub, AWS all have extensive audit trails.
+// This is the difference between "enterprise-ready" and "toy project".
+model AuditLog {
+  id        String      @id @default(cuid())
+  userId    String?     // Null for anonymous events (failed logins before user found)
+  user      User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  event     String
+  ipAddress String?
+  userAgent String?
+  metadata  String?       // Flexible: store extra context (e.g., {targetRole: "ADMIN"})
+
+  createdAt DateTime    @default(now())
+
+  @@index([userId])
+  @@index([event])
+  @@index([createdAt])
+  @@index([ipAddress]) // For anomaly detection queries
+}

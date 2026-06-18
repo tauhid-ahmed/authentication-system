@@ -1,0 +1,40 @@
+{
+  "name": "auth-learning-system",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Complete Authentication Learning System — Zero to Staff Engineer",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @auth/shared build && concurrently --names \"shared,api,web\" --prefix-colors \"cyan,green,blue\" \"pnpm --filter @auth/shared dev\" \"pnpm --filter @auth/api dev\" \"pnpm --filter @auth/web dev\"",
+    "dev:api": "pnpm --filter @auth/shared build && pnpm --filter @auth/api dev",
+    "dev:web": "pnpm --filter @auth/shared build && pnpm --filter @auth/web dev",
+    "build": "pnpm --filter @auth/shared build && pnpm --filter @auth/api build && pnpm --filter @auth/web build",
+    "db:generate": "pnpm --filter @auth/api db:generate",
+    "db:push": "pnpm --filter @auth/api db:push",
+    "db:migrate": "pnpm --filter @auth/api db:migrate",
+    "db:studio": "pnpm --filter @auth/api db:studio",
+    "db:seed": "pnpm --filter @auth/api db:seed",
+    "lint": "pnpm -r lint",
+    "type-check": "pnpm -r type-check",
+    "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.4.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "typescript": "^5.4.5"
+    },
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma",
+      "sharp"
+    ]
+  }
+}
