@@ -31,8 +31,32 @@ import {
 } from "../../utils/jwt.js";
 import { env } from "../../config/env.js";
 import { verifyRefreshToken } from "../../utils/jwt.js";
+import {
+  getRefreshTokenFromRequest,
+  wantsTokenResponse,
+} from "../../utils/authTransport.js";
 
 const isProduction = env.NODE_ENV === "production";
+
+function buildAuthResponse(
+  req: Request,
+  result: { user: unknown; tokens: { accessToken: string; refreshToken: string } }
+) {
+  return {
+    user: result.user,
+    ...(wantsTokenResponse(req) && { tokens: result.tokens }),
+  };
+}
+
+function buildRefreshResponse(
+  req: Request,
+  tokens: { accessToken: string; refreshToken: string; sessionId: string }
+) {
+  return {
+    message: "Tokens refreshed.",
+    ...(wantsTokenResponse(req) && { tokens }),
+  };
+}
 
 /**
  * POST /api/auth/signup
@@ -73,10 +97,10 @@ export async function signup(req: Request, res: Response): Promise<void> {
       getRefreshTokenCookieOptions(isProduction)
     );
 
-    // 5. Send response — note: NO tokens in response body
+    // 5. Send response. Browsers use cookies; native clients can opt into body tokens.
     sendSuccess(
       res,
-      { user: result.user },
+      buildAuthResponse(req, result),
       "Account created successfully.",
       201
     );
@@ -122,7 +146,7 @@ export async function login(req: Request, res: Response): Promise<void> {
       getRefreshTokenCookieOptions(isProduction)
     );
 
-    sendSuccess(res, { user: result.user }, "Login successful.");
+    sendSuccess(res, buildAuthResponse(req, result), "Login successful.");
   } catch (error) {
     if (error instanceof Error) {
       if (error.message === "INVALID_CREDENTIALS") {
@@ -142,11 +166,10 @@ export async function login(req: Request, res: Response): Promise<void> {
  * @milestone M5, M6
  *
  * This is the most security-critical endpoint.
- * The refresh token comes from the HTTP-only cookie.
+ * The refresh token can come from the HTTP-only cookie, request body, or native header.
  */
 export async function refreshToken(req: Request, res: Response): Promise<void> {
-  // Read from HTTP-only cookie
-  const token = req.cookies[COOKIE_NAMES.REFRESH_TOKEN] as string | undefined;
+  const token = getRefreshTokenFromRequest(req);
 
   if (!token) {
     sendError(res, "No refresh token. Please log in.", 401, "NO_REFRESH_TOKEN");
@@ -171,7 +194,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
       getRefreshTokenCookieOptions(isProduction)
     );
 
-    sendSuccess(res, { message: "Tokens refreshed." }, "Tokens refreshed.");
+    sendSuccess(res, buildRefreshResponse(req, result), "Tokens refreshed.");
   } catch (error) {
     if (error instanceof Error) {
       if (error.message === "INVALID_REFRESH_TOKEN") {
@@ -202,7 +225,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
  * POST /api/auth/logout
  */
 export async function logout(req: Request, res: Response): Promise<void> {
-  const token = req.cookies[COOKIE_NAMES.REFRESH_TOKEN] as string | undefined;
+  const token = getRefreshTokenFromRequest(req);
 
   // Clear cookies regardless of token validity
   res.clearCookie(COOKIE_NAMES.ACCESS_TOKEN, getClearCookieOptions(isProduction));

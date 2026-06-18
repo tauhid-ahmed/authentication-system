@@ -6,6 +6,11 @@
 
 ---
 
+> **Multi-client note:** A session represents a refresh-token family, not just
+> a browser tab. Browser clients identify the current session with cookies;
+> native clients send the refresh token in the body or `X-Refresh-Token`.
+> See [`docs/multi-client-api.md`](../multi-client-api.md).
+
 ## The Goal
 A user might be logged into your app on their Laptop, their iPhone, and an office computer. If they lose their iPhone, they need a way to see all active sessions and remotely log out of the lost device.
 

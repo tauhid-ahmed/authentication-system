@@ -69,10 +69,15 @@ pnpm dev
 
 Then follow the [14-day plan](./docs/milestones/M0-foundations.md#14-day-plan).
 
+For mobile, desktop, Postman, curl, or SDK clients, read the
+[Multi-Client Auth API](./docs/multi-client-api.md). Browser clients use
+HTTP-only cookies by default; native clients opt into response-body tokens and
+send `Authorization: Bearer <accessToken>`.
+
 ## Tech Stack
 
 - **Frontend**: Next.js 15 App Router, Tailwind CSS, shadcn/ui, React Hook Form, Zod
 - **Backend**: Express.js, TypeScript, Prisma
 - **Database**: Neon PostgreSQL
-- **Auth**: JWT (5m) + Refresh Tokens (30d), HTTP-only cookies, RBAC
+- **Auth**: JWT (5m) + Refresh Tokens (30d), HTTP-only cookies for browsers, Bearer tokens for mobile/desktop/API clients, RBAC
 - **Package Manager**: pnpm (monorepo workspaces)

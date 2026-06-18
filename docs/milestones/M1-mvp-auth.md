@@ -9,8 +9,8 @@
 ## The Goal
 In this module, we build the core engine of our authentication system from scratch. We will implement:
 1. **Signup:** Hashing a password and saving a user to the database.
-2. **Login:** Verifying a password, issuing a JWT, and setting an `HttpOnly` cookie.
-3. **Me:** An endpoint that reads the cookie, verifies the JWT, and returns the user profile.
+2. **Login:** Verifying a password, issuing a JWT, and setting browser-safe `HttpOnly` cookies.
+3. **Me:** An endpoint that accepts either browser cookies or `Authorization: Bearer <accessToken>`, verifies the JWT, and returns the user profile.
 
 We are writing the actual backend code for these flows in our Express API.
 
@@ -122,12 +122,13 @@ const refreshToken = crypto.randomBytes(64).toString("hex");
 await createSessionInDatabase(user.id, refreshToken);
 ```
 
-### 3.4 Set the Cookies (The Controller)
-Now we move up to the Controller (`auth.controller.ts`) to send the tokens to the browser.
+### 3.4 Return Tokens by Client Type (The Controller)
+Now we move up to the Controller (`auth.controller.ts`) to send the tokens using the right transport.
+
+Browsers should use `HttpOnly` cookies. Mobile apps, desktop apps, Postman, curl, and SDKs can request body tokens with `X-Auth-Token-Transport: body`.
 
 ```typescript
-// We NEVER return the tokens in the JSON response body.
-// We put them in HttpOnly cookies.
+// Browser path: tokens go into HttpOnly cookies.
 res.cookie("access_token", accessToken, {
   httpOnly: true, // Prevents XSS attacks
   secure: process.env.NODE_ENV === "production",
@@ -139,8 +140,20 @@ res.cookie("refresh_token", refreshToken, {
   // ... similar options, but 30 days maxAge
 });
 
-return res.json({ success: true, user: { id: user.id, email: user.email } });
+const wantsBodyTokens = req.header("X-Auth-Token-Transport") === "body";
+
+return res.json({
+  success: true,
+  data: {
+    user: { id: user.id, email: user.email },
+    ...(wantsBodyTokens && {
+      tokens: { accessToken, refreshToken, sessionId },
+    }),
+  },
+});
 ```
+
+The same backend supports both flows. The security decision is per client: cookies for browsers, Bearer tokens for native clients.
 
 ---
 
@@ -148,15 +161,22 @@ return res.json({ success: true, user: { id: user.id, email: user.email } });
 
 Now the user is logged in. They navigate to the dashboard. The frontend needs to know who they are, so it makes a `GET` request to `/api/auth/me`.
 
-Because we used cookies, the browser automatically attaches the `access_token` cookie to this request.
+In the browser flow, the browser automatically attaches the `access_token` cookie to this request.
+In native clients, the app sends the same token explicitly:
+
+```http
+Authorization: Bearer <accessToken>
+```
 
 ### 4.1 The Authenticate Middleware
 Open `apps/api/src/middlewares/authenticate.ts`. This middleware runs *before* the route handler.
 
 ```typescript
 export function authenticate(req, res, next) {
-  // 1. Grab the token from the cookie
-  const token = req.cookies.access_token;
+  // 1. Grab the token from the cookie or Authorization header
+  const token =
+    req.cookies.access_token ??
+    req.headers.authorization?.replace("Bearer ", "");
   if (!token) return res.status(401).json({ error: "Unauthorized" });
 
   try {

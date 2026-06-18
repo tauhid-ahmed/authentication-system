@@ -16,7 +16,8 @@ The solution is to make access tokens **very short-lived (5 minutes)** and intro
 |----------|-------------|---------------|
 | Lifespan | 5 minutes | 30 days |
 | Storage (server) | None (stateless JWT) | Database row |
-| Storage (browser) | HttpOnly Cookie | HttpOnly Cookie |
+| Browser transport | HttpOnly cookie | HttpOnly cookie |
+| Native transport | `Authorization: Bearer` | JSON body or `X-Refresh-Token` |
 | Purpose | Authenticate every API request | Get a new access token |
 | Can be revoked? | No (expires naturally) | Yes (delete the DB row) |
 | Sent to | Every API endpoint | Only `/api/auth/refresh` |
@@ -49,7 +50,7 @@ model Session {
 }
 ```
 
-The `refreshToken` field stores a **hashed** value. The actual raw token is only ever stored in the browser cookie. This follows the same principle as password storage: we store a hash, never the plaintext.
+The `refreshToken` field stores a **hashed** value. The actual raw token only leaves the backend through a secure client transport: an `HttpOnly` cookie for browsers, or the response body for native clients that explicitly request it. This follows the same principle as password storage: we store a hash, never the plaintext.
 
 ---
 
@@ -246,7 +247,10 @@ router.post(
   refreshRateLimiter, // Max 20 requests per 15 minutes
   async (req, res, next) => {
     try {
-      const rawRefreshToken = req.cookies.refresh_token;
+      const rawRefreshToken =
+        req.cookies.refresh_token ??
+        req.body.refreshToken ??
+        req.header("X-Refresh-Token");
       
       if (!rawRefreshToken) {
         return res.status(401).json({ error: { code: "NO_REFRESH_TOKEN" } });
@@ -254,12 +258,19 @@ router.post(
 
       const result = await authService.refreshTokens(rawRefreshToken, req);
 
-      // Set new cookies (same options as login)
+      // Set new cookies for browser clients (same options as login)
       const isProduction = env.NODE_ENV === "production";
       res.cookie("access_token", result.accessToken, getAccessTokenCookieOptions(isProduction));
       res.cookie("refresh_token", result.refreshToken, getRefreshTokenCookieOptions(isProduction));
 
-      return res.json({ success: true });
+      const wantsBodyTokens = req.header("X-Auth-Token-Transport") === "body";
+
+      return res.json({
+        success: true,
+        data: wantsBodyTokens
+          ? { tokens: result }
+          : { message: "Tokens refreshed." },
+      });
     } catch (error) {
       next(error);
     }
@@ -280,7 +291,10 @@ The tokens are sent as `Set-Cookie` headers, not in the response body. This keep
 
 router.post("/logout", authenticate, async (req, res, next) => {
   try {
-    const rawRefreshToken = req.cookies.refresh_token;
+    const rawRefreshToken =
+      req.cookies.refresh_token ??
+      req.body.refreshToken ??
+      req.header("X-Refresh-Token");
     
     if (rawRefreshToken) {
       // Find and revoke the session in the database
@@ -300,7 +314,7 @@ router.post("/logout", authenticate, async (req, res, next) => {
       }
     }
 
-    // Clear cookies from the browser
+    // Clear cookies from browser clients
     res.clearCookie("access_token");
     res.clearCookie("refresh_token");
 
@@ -313,7 +327,7 @@ router.post("/logout", authenticate, async (req, res, next) => {
 
 **Two things happen on logout:**
 1. The session row is marked `isRevoked: true` in the database (server-side)
-2. The cookies are cleared from the browser (client-side)
+2. Browser cookies are cleared when present (client-side)
 
 Both are needed. Just clearing the cookie is not enough — the token is still valid in the database until it expires. Just revoking in the database is not enough — the browser would still send the cookie until it naturally expires.
 

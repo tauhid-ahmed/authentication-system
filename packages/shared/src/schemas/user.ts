@@ -7,7 +7,7 @@ import { z } from "zod";
 export const RoleSchema = z.enum(["USER", "ADMIN", "SUPER_ADMIN"]);
 export type Role = z.infer<typeof RoleSchema>;
 
-// Role hierarchy — higher index = more permissions
+// Role hierarchy: higher number means more permissions.
 export const ROLE_HIERARCHY: Record<Role, number> = {
   USER: 1,
   ADMIN: 2,
@@ -21,9 +21,9 @@ export const ROLE_HIERARCHY: Record<Role, number> = {
  * we use hierarchy numbers. This scales cleanly as roles are added.
  *
  * @example
- * hasMinimumRole('ADMIN', 'USER')     → true  (ADMIN >= USER)
- * hasMinimumRole('USER', 'ADMIN')     → false (USER < ADMIN)
- * hasMinimumRole('SUPER_ADMIN', 'ADMIN') → true
+ * hasMinimumRole('ADMIN', 'USER')        -> true
+ * hasMinimumRole('USER', 'ADMIN')        -> false
+ * hasMinimumRole('SUPER_ADMIN', 'ADMIN') -> true
  */
 export function hasMinimumRole(userRole: Role, requiredRole: Role): boolean {
   return ROLE_HIERARCHY[userRole] >= ROLE_HIERARCHY[requiredRole];
@@ -50,7 +50,7 @@ export type UpdateRoleInput = z.infer<typeof UpdateRoleSchema>;
 // ============================================================
 // API RESPONSE TYPES
 // ============================================================
-// These are the shapes your API returns — shared between frontend and backend.
+// These are the shapes your API returns, shared between frontend and backend.
 // This prevents frontend developers from guessing what the API returns.
 
 export const UserResponseSchema = z.object({
@@ -65,10 +65,18 @@ export const UserResponseSchema = z.object({
 
 export type UserResponse = z.infer<typeof UserResponseSchema>;
 
+export const AuthTokensResponseSchema = z.object({
+  accessToken: z.string(),
+  refreshToken: z.string(),
+  sessionId: z.string().optional(),
+});
+
+export type AuthTokensResponse = z.infer<typeof AuthTokensResponseSchema>;
+
 export const AuthResponseSchema = z.object({
   user: UserResponseSchema,
-  // Note: tokens are NOT in the response body — they're in HTTP-only cookies
-  // This is intentional for security (XSS protection)
+  // Browser clients use HTTP-only cookies. Native clients can opt into body tokens.
+  tokens: AuthTokensResponseSchema.optional(),
   message: z.string(),
 });
 

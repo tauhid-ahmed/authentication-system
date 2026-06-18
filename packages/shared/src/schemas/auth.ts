@@ -79,10 +79,12 @@ export type LoginInput = z.infer<typeof LoginSchema>;
 // ============================================================
 // REFRESH TOKEN SCHEMA
 // ============================================================
-// The refresh token arrives via HTTP-only cookie.
-// This schema is for body-based refresh (used in tests only).
+// Browser refresh uses an HTTP-only cookie.
+// Native clients can send refreshToken in the body and request body tokens.
 export const RefreshTokenSchema = z.object({
-  refreshToken: z.string().optional(), // optional because cookie is primary
+  refreshToken: z.string().optional(), // optional because browser cookies are also supported
+  tokenTransport: z.enum(["cookie", "body"]).optional(),
+  clientType: z.enum(["web", "mobile", "desktop", "native"]).optional(),
 });
 
 export type RefreshTokenInput = z.infer<typeof RefreshTokenSchema>;

@@ -6,6 +6,11 @@
 
 ---
 
+> **Multi-client note:** Browser examples in this curriculum use `HttpOnly`
+> cookies. Mobile, desktop, Postman, curl, and SDK clients use the same token
+> lifecycle with explicit Bearer-token transport. See
+> [`docs/multi-client-api.md`](../multi-client-api.md).
+
 ## Why This Document Exists
 
 Every experienced engineer has seen codebases where authentication was bolted on as an afterthought. Tokens stored in `localStorage`. Sessions that never expire. Role checks done only on the frontend. These are not "beginner mistakes" — they are the result of learning *how* to do authentication without learning *why*.

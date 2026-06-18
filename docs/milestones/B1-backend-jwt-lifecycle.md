@@ -6,6 +6,10 @@
 
 ---
 
+> **Multi-client note:** Cookie examples are the browser transport. The live API
+> also accepts `Authorization: Bearer <accessToken>` for mobile, desktop, CLI,
+> and SDK clients. See [`docs/multi-client-api.md`](../multi-client-api.md).
+
 ## What You Will Learn
 
 By the end of this document you will be able to:
@@ -329,4 +333,3 @@ Step 6: Deploy again (only new secret is accepted)
 4. **Understand the cookie flags.** In DevTools → Application → Cookies, look at the flags on your `access_token` cookie. Confirm `HttpOnly` and `SameSite` are set. Try running `document.cookie` in the console — is the access token visible?
 
 5. **Implement dual-secret rotation.** Update your `verifyAccessToken` function to accept both `ACCESS_TOKEN_SECRET` and `ACCESS_TOKEN_SECRET_OLD`. Verify it works by setting both env vars to different values and testing with tokens signed by each.
-

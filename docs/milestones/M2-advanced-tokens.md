@@ -15,25 +15,40 @@ This is arguably the most complex and critical part of a secure authentication s
 
 ## Step 1: The Refresh Endpoint (Backend)
 
-When the frontend gets a `401 Unauthorized` because the 5-minute Access Token expired, it silently calls `POST /api/auth/refresh`. The browser automatically attaches the `refresh_token` cookie.
+When the frontend gets a `401 Unauthorized` because the 5-minute Access Token expired, it silently calls `POST /api/auth/refresh`.
+
+Browser clients rely on the browser attaching the `refresh_token` cookie. Native clients send the refresh token explicitly in the JSON body or `X-Refresh-Token` header.
 
 ### 1.1 The Controller (`auth.controller.ts`)
 ```typescript
 export async function refresh(req, res) {
-  // 1. Extract the raw token from the HttpOnly cookie
-  const rawRefreshToken = req.cookies.refresh_token;
+  // 1. Extract the raw token from cookie, body, or native-client header
+  const rawRefreshToken =
+    req.cookies.refresh_token ??
+    req.body.refreshToken ??
+    req.header("X-Refresh-Token");
   if (!rawRefreshToken) throw new AppError("NO_REFRESH_TOKEN", 401);
 
   // 2. Delegate to the Service layer to rotate the token
   const result = await authService.refreshTokens(rawRefreshToken, req.ip, req.headers["user-agent"]);
 
-  // 3. Issue the new cookies to the browser
+  // 3. Issue the new cookies to browsers
   res.cookie("access_token", result.accessToken, getAccessTokenCookieOptions());
   res.cookie("refresh_token", result.refreshToken, getRefreshTokenCookieOptions());
 
-  return res.json({ success: true });
+  // Native clients opt into receiving rotated tokens in JSON.
+  const wantsBodyTokens = req.header("X-Auth-Token-Transport") === "body";
+
+  return res.json({
+    success: true,
+    data: wantsBodyTokens
+      ? { tokens: result }
+      : { message: "Tokens refreshed." },
+  });
 }
 ```
+
+The rotation algorithm is identical for every client. Only the transport changes.
 
 ### 1.2 The Service Logic & Replay Attack Detection
 Now open `auth.service.ts` and trace the `refreshTokens` function.

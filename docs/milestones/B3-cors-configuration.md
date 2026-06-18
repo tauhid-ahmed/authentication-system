@@ -6,6 +6,11 @@
 
 ---
 
+> **Multi-client note:** CORS is only enforced by browsers. Mobile apps,
+> desktop apps, Postman, curl, and backend SDKs still authenticate with the
+> same API, but they are not protected or blocked by CORS. See
+> [`docs/multi-client-api.md`](../multi-client-api.md).
+
 ## What is CORS and Why Does it Exist?
 
 **CORS (Cross-Origin Resource Sharing)** is a browser security mechanism that blocks JavaScript from making HTTP requests to a different origin than the one the page was loaded from.

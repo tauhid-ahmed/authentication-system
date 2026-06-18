@@ -10,8 +10,8 @@ import { sessionsRepository } from "./sessions.repository.js";
 import { authenticate } from "../../middlewares/authenticate.js";
 import { auditService } from "../audit/audit.service.js";
 import { sendSuccess, sendError } from "../../utils/response.js";
-import { verifyRefreshToken, COOKIE_NAMES } from "../../utils/jwt.js";
-import { extractIpAddress } from "../../utils/device.js";
+import { verifyRefreshToken } from "../../utils/jwt.js";
+import { getRefreshTokenFromRequest } from "../../utils/authTransport.js";
 
 // ============================================================
 // SERVICE
@@ -77,7 +77,7 @@ export const sessionsService = {
 // ============================================================
 async function listSessions(req: Request, res: Response): Promise<void> {
   if (!req.user) { sendError(res, "Authentication required.", 401); return; }
-  const refreshToken = req.cookies[COOKIE_NAMES.REFRESH_TOKEN] as string | undefined;
+  const refreshToken = getRefreshTokenFromRequest(req);
   const sessions = await sessionsService.listSessions(req.user.id, refreshToken);
   sendSuccess(res, { sessions, count: sessions.length });
 }
@@ -100,7 +100,7 @@ async function revokeSession(req: Request, res: Response): Promise<void> {
 
 async function revokeOtherSessions(req: Request, res: Response): Promise<void> {
   if (!req.user) { sendError(res, "Authentication required.", 401); return; }
-  const refreshToken = req.cookies[COOKIE_NAMES.REFRESH_TOKEN] as string | undefined;
+  const refreshToken = getRefreshTokenFromRequest(req);
   const count = await sessionsService.revokeOtherSessions(req.user.id, refreshToken);
   sendSuccess(res, { revokedCount: count }, `${count} other session(s) revoked.`);
 }

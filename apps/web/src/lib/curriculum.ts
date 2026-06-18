@@ -61,9 +61,9 @@ export const TRACKS = [
     milestones: [
       { slug: "A1-architecture-oauth-patterns", title: "A1: OAuth Patterns",      level: "Expert", time: "1.5 hrs", desc: "Backend-first vs Frontend-first vs BFF pattern analysis." },
       { slug: "A2-bff-pattern",                 title: "A2: Backend For Frontend", level: "Expert", time: "2.5 hrs", desc: "Building a full BFF: proxy middleware, microservice auth, RS256 keys." },
+      { slug: "A3-native-client-token-transport", title: "A3: Native Clients",     level: "Advanced", time: "1 hr",  desc: "Supporting mobile and desktop apps with Bearer tokens while browsers keep cookies." },
     ]
   }
 ];
 
 export const FLAT_MILESTONES = TRACKS.flatMap(track => track.milestones.map(m => m.slug));
-

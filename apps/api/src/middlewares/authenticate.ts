@@ -46,9 +46,10 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 const { JsonWebTokenError, TokenExpiredError } = jwt;
-import { verifyAccessToken, COOKIE_NAMES } from "../utils/jwt.js";
+import { verifyAccessToken } from "../utils/jwt.js";
 import { sendError } from "../utils/response.js";
 import type { AuthenticatedUser } from "@auth/shared";
+import { getAccessTokenFromRequest } from "../utils/authTransport.js";
 
 // ============================================================
 // Extend Express Request type to include authenticated user
@@ -74,7 +75,7 @@ export function authenticate(
   res: Response,
   next: NextFunction
 ): void {
-  const token = req.cookies[COOKIE_NAMES.ACCESS_TOKEN] as string | undefined;
+  const token = getAccessTokenFromRequest(req);
 
   if (!token) {
     // WHY 401 (not 403)?
@@ -119,7 +120,7 @@ export function authenticateOptional(
   _res: Response,
   next: NextFunction
 ): void {
-  const token = req.cookies[COOKIE_NAMES.ACCESS_TOKEN] as string | undefined;
+  const token = getAccessTokenFromRequest(req);
 
   if (token) {
     try {

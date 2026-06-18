@@ -26,6 +26,8 @@ import { Router } from "express";
 import { loginLimiter, signupLimiter, refreshLimiter } from "../../middlewares/rateLimiter.js";
 import { authenticate } from "../../middlewares/authenticate.js";
 import * as authController from "./auth.controller.js";
+import { getAccessTokenFromRequest } from "../../utils/authTransport.js";
+import { verifyAccessToken } from "../../utils/jwt.js";
 
 const router: Router = Router();
 
@@ -50,11 +52,9 @@ function authenticateOptionalForLogout(
   res: import("express").Response,
   next: import("express").NextFunction
 ): void {
-  const cookieName = "access_token";
-  const token = req.cookies[cookieName] as string | undefined;
+  const token = getAccessTokenFromRequest(req);
   if (token) {
     try {
-      const { verifyAccessToken } = require("../../utils/jwt.js");
       const payload = verifyAccessToken(token);
       req.user = { id: payload.sub, role: payload.role };
     } catch {
