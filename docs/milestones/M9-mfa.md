@@ -1,113 +1,156 @@
-# M9: Two-Factor Authentication (MFA / 2FA)
+# M9: Multi-Factor Authentication (MFA)
 
-No matter how strong your password hashing algorithm is, users will reuse passwords from other sites. If those sites get breached, your users get breached. 
-
-Two-Factor Authentication (2FA) is the ultimate defense. Even if an attacker has the password, they cannot log in without the user's physical device.
+**Track:** Core Curriculum  
+**Prerequisites:** M1 (MVP Auth), M8 (Password Reset)  
+**Time:** ~3 hours  
 
 ---
 
-## 1. TOTP Architecture (Time-Based One-Time Password)
+## The Goal
+Passwords are the weakest link in security. Multi-Factor Authentication (MFA), specifically Time-Based One-Time Passwords (TOTP), adds a second layer. 
 
-We use TOTP (the standard behind Google Authenticator, Authy, etc.). 
+In this module, we implement an enterprise-grade TOTP system using authenticator apps (Google Authenticator, Authy, etc.).
 
-TOTP works on a shared secret.
-1. Our server generates a random string (the secret).
-2. We show this secret to the user as a QR code.
-3. The user scans it with their Authenticator App.
-4. Now, both the server and the app can use the exact same mathematical formula (combining the secret + the current time) to generate the exact same 6-digit code every 30 seconds.
+---
 
-### Database Updates
+## Step 1: The Math Behind TOTP (RFC 6238)
+
+TOTP relies on a **Shared Secret**.
+1. The server generates a random string (the secret).
+2. The user scans a QR code containing that secret.
+3. Both the server and the user's phone put the secret and the *current time* into a cryptographic hashing algorithm (HMAC-SHA1).
+4. They both take the last 6 digits of the hash.
+5. If the 6 digits match, the user is authenticated.
+
+This is why TOTP works entirely offline! The phone and server never communicate; they just use the same math and the same clock.
+
+---
+
+## Step 2: Enabling MFA (Backend)
+
+We need to store the user's TOTP secret in the database.
+
+### 2.1 Database Schema
 ```prisma
 model User {
-  // ... existing fields ...
-  mfaEnabled Boolean @default(false)
-  mfaSecret  String? // Stored encrypted or hashed ideally, but plain text for MVP
+  // ... existing fields
+  isMfaEnabled Boolean @default(false)
+  mfaSecret    String? // The shared secret
 }
 ```
 
----
-
-## 2. The Setup Flow
-
-When a user wants to enable MFA:
-
-1. **Generate Secret**: The backend generates a TOTP secret using a library like `otplib`.
-2. **Generate QR Code**: The backend generates an `otpauth://` URI and converts it to a QR code image (or sends the URI to the frontend to render).
-3. **Verify**: The user scans the code and enters the 6-digit number shown on their phone.
-4. **Enable**: The backend verifies the code. If it matches, `mfaEnabled` is set to `true` and the `mfaSecret` is permanently saved.
-
----
-
-## 3. The Login Flow (The 2FA Challenge)
-
-When MFA is introduced, the login flow splits into two steps. This is the hardest part of building an auth system.
-
-### Step 1: Password Verification
-User submits Email + Password to `/api/auth/login`.
+### 2.2 Generating the Secret & QR Code
+Open `apps/api/src/modules/mfa/mfa.service.ts`. We use the `otplib` and `qrcode` packages.
 
 ```typescript
-// If the password is correct, but MFA is enabled:
-if (user.mfaEnabled) {
-  // DO NOT ISSUE FULL TOKENS YET!
+import { authenticator } from "otplib";
+import qrcode from "qrcode";
+
+export async function setupMfa(userId) {
+  // 1. Generate a massive, cryptographically secure secret
+  const secret = authenticator.generateSecret();
   
-  // Instead, issue a temporary, restricted "pre-auth" token
-  const preAuthToken = signPreAuthToken({ sub: user.id });
-  
-  return res.json({ 
-    requiresMfa: true, 
-    preAuthToken 
+  // 2. Temporarily save it to the DB (but MFA is not "enabled" yet)
+  await db.user.update({
+    where: { id: userId },
+    data: { mfaSecret: secret, isMfaEnabled: false }
   });
-}
 
-// If MFA is disabled, proceed to full login normally.
+  // 3. Create the otpauth URI (This is what the QR code encodes)
+  // Format: otpauth://totp/MyAppName:user@email.com?secret=xyz&issuer=MyAppName
+  const user = await db.user.findUnique({ where: { id: userId }});
+  const otpauth = authenticator.keyuri(user.email, "ExecutionMastery", secret);
+
+  // 4. Generate the QR code as a Base64 image
+  const qrCodeDataUrl = await qrcode.toDataURL(otpauth);
+
+  return { secret, qrCodeDataUrl };
+}
 ```
 
-### Step 2: The MFA Challenge
-The frontend redirects the user to a screen asking for their 6-digit code.
-The user submits the Code + the `preAuthToken` to a new endpoint: `/api/auth/login/mfa`.
+### 2.3 Verifying the Setup
+The user scans the QR code and types the 6-digit pin. The backend verifies it.
 
 ```typescript
-// 1. Verify the preAuthToken (ensures they actually provided a valid password recently)
-const payload = verifyPreAuthToken(preAuthToken);
-const user = await prisma.user.findUnique({ where: { id: payload.sub }});
+export async function verifyMfaSetup(userId, token) {
+  const user = await db.user.findUnique({ where: { id: userId }});
 
-// 2. Verify the 6-digit code against the user's saved mfaSecret
-const isValid = otplib.authenticator.check(providedCode, user.mfaSecret);
-if (!isValid) throw new Error("Invalid Code");
+  // Mathematically verify the 6-digit pin against the secret
+  const isValid = authenticator.verify({ token, secret: user.mfaSecret });
 
-// 3. SUCCESS! Generate the full Access Token and Refresh Token sessions.
-const session = await createSession(user.id, ...);
-const accessToken = signAccessToken(...);
-// ... set cookies and return
-```
+  if (!isValid) throw new AppError("INVALID_MFA_TOKEN", 400);
 
-### Why use a `preAuthToken`?
-If you don't use a temporary token, you have to store the "half-logged-in" state somewhere (like a server-side session or a database flag). A short-lived JWT (e.g., 5 minutes) containing the `userId` is perfect for stateless "half-logins" because it requires no database storage. It simply says: "This person successfully provided the password for User 123 in the last 5 minutes."
+  // If valid, officially enable MFA!
+  await db.user.update({
+    where: { id: userId },
+    data: { isMfaEnabled: true }
+  });
 
----
-
-## 4. Recovery Codes
-
-If a user drops their phone in the ocean, they are permanently locked out.
-To fix this, when MFA is first enabled, we must generate 10 backup codes.
-
-```prisma
-model BackupCode {
-  id        String  @id @default(cuid())
-  userId    String
-  codeHash  String  // Hashed, just like a password!
-  used      Boolean @default(false)
+  return { success: true };
 }
 ```
 
-During Step 2 of the login flow, if the user clicks "Use Recovery Code", they submit a long string instead of a 6-digit TOTP. The backend checks if the string matches any unused `BackupCode` for that user. If it does, they log in, and that specific backup code is marked `used = true`.
+---
+
+## Step 3: Modifying the Login Flow
+
+Now that MFA is enabled, we have to intercept the login flow.
+
+Open `apps/api/src/modules/auth/auth.service.ts` and modify the `login` function.
+
+```typescript
+// STEP A: Verify Password
+const isValid = await bcrypt.compare(password, user.passwordHash);
+if (!isValid) throw new AppError("INVALID_CREDENTIALS", 401);
+
+// STEP B: The MFA Intercept
+if (user.isMfaEnabled) {
+  // We DO NOT issue the Access/Refresh tokens!
+  // Instead, we issue a temporary, short-lived "MFA Token"
+  const mfaToken = jwt.sign({ userId: user.id, requiresMfa: true }, process.env.MFA_TOKEN_SECRET, { expiresIn: '5m' });
+  
+  return { mfaRequired: true, mfaToken };
+}
+
+// STEP C: Normal Login
+const accessToken = signAccessToken(user.id, user.role);
+// ...
+```
 
 ---
 
-## 5. Summary
+## Step 4: The Final Verify Endpoint
 
-MFA completes the modern authentication stack. By implementing Password Resets, Session Revocation, and TOTP, you have built a system functionally equivalent to GitHub or Stripe.
+The frontend sees `mfaRequired: true`, shows the 6-digit pin input UI, and calls `POST /api/auth/verify-mfa`.
 
-### The Learning Journey Complete
-You have now conceptually walked through every layer of a Senior-level authentication architecture. 
-The codebase provided alongside these documents is the living implementation of these concepts. Explore the code, break it, add these MFA features as an exercise, and you will master Authentication engineering.
+```typescript
+export async function verifyMfaLogin(req, res) {
+  const { mfaToken, pin } = req.body;
+
+  // 1. Verify the temporary MFA JWT
+  const decoded = jwt.verify(mfaToken, process.env.MFA_TOKEN_SECRET);
+  
+  // 2. Look up the user's secret
+  const user = await db.user.findUnique({ where: { id: decoded.userId }});
+
+  // 3. Verify the 6-digit pin
+  const isValid = authenticator.verify({ token: pin, secret: user.mfaSecret });
+  if (!isValid) throw new AppError("INVALID_PIN", 400);
+
+  // 4. Success! Now we issue the REAL tokens!
+  const accessToken = signAccessToken(user.id, user.role);
+  const rawRefreshToken = crypto.randomBytes(64).toString("hex");
+  await createSessionInDatabase(user.id, rawRefreshToken);
+
+  // Set cookies...
+  return res.json({ success: true });
+}
+```
+
+---
+
+## Practice Exercises
+
+1. **Scan the Code:** Use Google Authenticator or Authy on your phone to scan the generated QR code. 
+2. **Test Expiration:** Look at the authenticator app. Wait for the circle to deplete so a new code generates. Use the *old* code. Ensure the backend rejects it.
+3. **Bypass Attempt:** Try to hit `POST /verify-mfa` without passing the `mfaToken`. Why is the temporary `mfaToken` JWT required? (Hint: The backend needs to know *who* is trying to log in statelessly!).

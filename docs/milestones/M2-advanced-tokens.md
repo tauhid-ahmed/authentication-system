@@ -1,109 +1,159 @@
-# M2: Advanced Tokens & Security (Refresh Token Rotation)
+# M2: Advanced Tokens (Implementation Guide)
 
-In M1, we built a working login system. But access tokens expire in 5 minutes. If a user stays on our dashboard for 6 minutes, any API request they make will return `401 Unauthorized`. 
-
-We need a way to silently get a new access token without asking the user for their password again. This is where **Refresh Tokens** come in.
-
----
-
-## 1. The Core Refresh Flow
-
-When the frontend gets a `401 Token Expired` error, it silently makes a request to `POST /api/auth/refresh`. The browser automatically includes the `refresh_token` HTTP-only cookie.
-
-### The Backend Logic (`auth.controller.ts` -> `auth.service.ts`)
-1. Extract the refresh token from the cookie.
-2. Verify its cryptographic signature (is it a valid JWT?).
-3. **Database Check**: Look up the `sessionId` from the token in the `Session` table.
-4. **Security Checks**:
-   - Does the session exist?
-   - Is `session.isRevoked` true?
-   - Has the token expired in the database (`expiresAt < now`)?
-   - **Crucial**: Does `session.refreshToken` match the token sent by the user? (Replay Attack Prevention)
-5. Generate a NEW access token.
-6. Generate a NEW refresh token.
-7. Update the `Session` row in the database with the new refresh token.
-8. Send both new tokens back as cookies.
+**Track:** Core Curriculum  
+**Prerequisites:** M1 (MVP Auth)  
+**Time:** ~3 hours  
 
 ---
 
-## 2. Refresh Token Rotation (RTR)
+## The Goal
+In M1, we built the MVP where an Access Token lasts 5 minutes. If we stopped there, users would be logged out every 5 minutes. In this module, we implement **Refresh Token Rotation**, which allows users to stay logged in securely for 30 days without exposing long-lived access tokens.
 
-Notice Step 6 & 7 above. We don't just issue a new access token; we issue a **new refresh token** every single time they refresh.
+This is arguably the most complex and critical part of a secure authentication system.
 
-**Why?** If a refresh token is stolen, the attacker can use it to get access tokens forever. By rotating the refresh token on every use, we ensure a token can only be used *once*.
+---
 
-### Detecting Replay Attacks (The "Reuse" Scenario)
-Imagine an attacker steals Alice's refresh token (Token A).
-- Alice is browsing normally. Her frontend refreshes her session. She sends Token A to the server.
-- The server accepts Token A, issues Token B to Alice, and saves Token B in the database.
-- Now, the attacker tries to use their stolen Token A.
-- The server looks at the database. The database says the current valid token is Token B. The attacker sent Token A.
-- **ALERT! REUSE DETECTED!**
+## Step 1: The Refresh Endpoint (Backend)
 
-When the server detects that an old, already-used refresh token is being sent, it knows a token has been stolen. 
+When the frontend gets a `401 Unauthorized` because the 5-minute Access Token expired, it silently calls `POST /api/auth/refresh`. The browser automatically attaches the `refresh_token` cookie.
 
-### The Nuclear Option
-How do we respond to a reuse detection?
-We cannot know who is the attacker and who is the legitimate user. Therefore, we drop the nuclear bomb: **We revoke ALL sessions for that user.**
-
+### 1.1 The Controller (`auth.controller.ts`)
 ```typescript
-// See: apps/api/src/modules/auth/auth.service.ts -> refreshToken()
-if (session.refreshToken !== oldRefreshToken) {
-  // REPLAY ATTACK DETECTED!
-  // Someone is trying to use an old refresh token.
-  // We must assume the token was compromised.
-  // NUCLEAR OPTION: Revoke ALL sessions for this user.
-  await revokeAllUserSessions(session.userId);
-  throw new Error("TOKEN_REUSE_DETECTED");
+export async function refresh(req, res) {
+  // 1. Extract the raw token from the HttpOnly cookie
+  const rawRefreshToken = req.cookies.refresh_token;
+  if (!rawRefreshToken) throw new AppError("NO_REFRESH_TOKEN", 401);
+
+  // 2. Delegate to the Service layer to rotate the token
+  const result = await authService.refreshTokens(rawRefreshToken, req.ip, req.headers["user-agent"]);
+
+  // 3. Issue the new cookies to the browser
+  res.cookie("access_token", result.accessToken, getAccessTokenCookieOptions());
+  res.cookie("refresh_token", result.refreshToken, getRefreshTokenCookieOptions());
+
+  return res.json({ success: true });
 }
 ```
 
-Both the attacker and Alice will be logged out. Alice will have to log in again with her password, but the attacker is locked out permanently.
-
----
-
-## 3. Dealing with Concurrency
-
-Refresh Token Rotation introduces a massive frontend headache: **Concurrency**.
-
-Imagine a dashboard that makes 3 simultaneous API calls on load:
-1. `GET /api/users/me`
-2. `GET /api/dashboard/stats`
-3. `GET /api/dashboard/notifications`
-
-If the access token is expired, all 3 requests will fail simultaneously.
-If all 3 requests independently trigger the `/api/auth/refresh` endpoint:
-- Request 1 sends Token A, gets Token B.
-- Request 2 sends Token A, but the DB already expects Token B!
-- **FALSE ALARM REPLAY ATTACK!** Alice gets logged out just for loading her dashboard.
-
-### The Concurrency Lock (`apps/web/src/lib/fetch.ts`)
-To fix this, the frontend must intercept the 401 errors and use a **singleton lock**.
-
-1. Request 1 gets 401. It sets `isRefreshing = true` and starts the refresh call.
-2. Request 2 gets 401. It sees `isRefreshing = true`, so it waits for Request 1's refresh promise to resolve.
-3. Request 3 gets 401. It also waits.
-4. Request 1's refresh succeeds! It sets `isRefreshing = false`.
-5. Requests 1, 2, and 3 all retry their original API calls with the new access token.
+### 1.2 The Service Logic & Replay Attack Detection
+Now open `auth.service.ts` and trace the `refreshTokens` function.
 
 ```typescript
-// See: apps/web/src/lib/fetch.ts -> authFetchClient()
-if (!isRefreshing) {
-  isRefreshing = true;
-  refreshPromise = fetch("/api/auth/refresh", ...)
+// STEP A: Find the active session using the hash
+// We loop through sessions and use bcrypt.compare(rawToken, session.refreshToken)
+const matchedSession = await findSessionByToken(rawRefreshToken);
+
+if (!matchedSession) throw new AppError("INVALID_REFRESH_TOKEN", 401);
+
+// STEP B: REPLAY ATTACK DETECTION (Critical Security)
+// If the token matches a session, but that session is already marked "isRevoked",
+// it means someone is trying to use an old token that has ALREADY been rotated.
+if (matchedSession.isRevoked) {
+  // 💥 SECURITY EVENT 💥
+  // An attacker might have stolen the old token. We must immediately log the user
+  // out of EVERY device to protect their account.
+  await db.session.updateMany({
+    where: { userId: matchedSession.userId },
+    data: { isRevoked: true }
+  });
+  throw new AppError("TOKEN_REUSE_DETECTED", 401);
 }
-const refreshSuccess = await refreshPromise;
-if (refreshSuccess) {
-  // Retry original request
-}
+
+// STEP C: Rotate the Token
+// Mark the current session as revoked.
+await db.session.update({ where: { id: matchedSession.id }, data: { isRevoked: true } });
+
+// Generate new tokens
+const newAccessToken = signAccessToken(matchedSession.user.id, matchedSession.user.role);
+const newRawRefreshToken = crypto.randomBytes(64).toString("hex");
+
+// Create a brand new session row in the database
+await createSessionInDatabase(matchedSession.user.id, newRawRefreshToken);
+
+return { accessToken: newAccessToken, refreshToken: newRawRefreshToken };
 ```
 
 ---
 
-## 4. What's Next?
+## Step 2: The Fetch Interceptor (Frontend)
 
-We now have a bulletproof authentication engine. It handles initial logins, keeps the user logged in silently, and detects token theft via rotation.
+The backend is ready, but the frontend needs to handle `401` errors and call the refresh endpoint silently. We never want the user to see "Session Expired" unless the refresh token itself is expired or revoked.
 
-But an Auth System isn't just about logging in. It's about knowing *what* the logged-in user is allowed to do.
+Open `apps/web/src/lib/fetch-client.ts`.
 
-Proceed to **M3: Authorization & RBAC** (Role-Based Access Control).
+### 2.1 The Race Condition
+Imagine the dashboard makes 3 simultaneous API calls:
+- `GET /profile`
+- `GET /stats`
+- `GET /notifications`
+
+If the Access Token expired 1 second ago, ALL THREE requests will fail with a `401`. If the frontend blindly calls `/refresh` for each failure, three `/refresh` requests will hit the backend simultaneously. 
+The backend will process the first one, rotate the token, and then immediately detect the second one as a **Replay Attack**, logging the user out!
+
+### 2.2 The Concurrency Lock Implementation
+We solve this using a Promise Lock outside the fetch function.
+
+```typescript
+let isRefreshing = false;
+let pendingRefreshPromise: Promise<boolean> | null = null;
+
+function refreshAccessToken(): Promise<boolean> {
+  // If no refresh is happening, start one
+  if (!isRefreshing) {
+    isRefreshing = true;
+    
+    // Save the promise so concurrent calls can await it
+    pendingRefreshPromise = fetch('/api/auth/refresh', { method: 'POST' })
+      .then(res => res.ok)
+      .finally(() => {
+        isRefreshing = false;
+        pendingRefreshPromise = null;
+      });
+  }
+  
+  // Return the active promise to ALL concurrent callers
+  return pendingRefreshPromise!;
+}
+```
+
+### 2.3 The Interceptor Wrapper
+```typescript
+export async function authFetchClient(url, options) {
+  // 1. Make the original request
+  let response = await fetch(url, options);
+
+  // 2. If it fails with 401...
+  if (response.status === 401) {
+    const errorData = await response.clone().json();
+    
+    // Check if it's specifically an expired token
+    if (errorData.error.code === "TOKEN_EXPIRED") {
+      
+      // 3. Await the refresh lock (whether it just started or was already running)
+      const refreshed = await refreshAccessToken();
+      
+      // 4. If refresh succeeded, RETRY the original request!
+      if (refreshed) {
+        response = await fetch(url, options);
+      } else {
+        // Refresh failed (refresh token is dead) -> kick to login
+        window.location.href = "/login?reason=session_expired";
+      }
+    } 
+    // 5. Check if the backend detected a replay attack!
+    else if (errorData.error.code === "TOKEN_REUSE_DETECTED") {
+      window.location.href = "/login?reason=security_event";
+    }
+  }
+
+  return response;
+}
+```
+
+---
+
+## Practice Exercises
+
+1. **Test the Interceptor:** Change the `ACCESS_TOKEN_EXPIRY` in your `.env` to `10s`. Log in, wait 15 seconds, and navigate around the dashboard. Watch the Network tab. You should see a `401`, followed silently by a `POST /refresh`, followed by a successful retry.
+2. **Break the Lock:** Temporarily remove the `if (!isRefreshing)` check in `fetch-client.ts`. Add a button to your dashboard that triggers 3 `authFetchClient` requests simultaneously. Click it after the token expires. Watch the backend logs detect a Replay Attack and log you out.
+3. **Database Inspection:** Look at your database (using Prisma Studio). Observe how a new row is created and the old row is marked `isRevoked: true` every time a refresh occurs.

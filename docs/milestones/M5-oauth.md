@@ -1,112 +1,165 @@
-# M5: OAuth 2.0 & Third-Party Logins
+# M5: OAuth 2.0 (Google) Implementation Guide
 
-Users don't like creating new passwords. Providing "Sign in with Google" or "Sign in with GitHub" significantly increases conversion rates.
-
-In this milestone, we explore how to integrate external Identity Providers (IdPs) into our system without compromising our own security architecture.
-
----
-
-## 1. The OAuth 2.0 Flow (Authorization Code + PKCE)
-
-There are two ways to implement OAuth:
-1. **Frontend-First**: The frontend uses a Google SDK, gets a token, and sends it to the backend. (Easier, but less secure; the backend must trust the frontend).
-2. **Backend-First (The right way)**: The backend redirects the user to Google, Google redirects back to the backend with a temporary `code`, and the backend exchanges the code for a token. 
-
-We use the **Backend-First** approach with **PKCE (Proof Key for Code Exchange)**.
-
-### Why PKCE?
-Without PKCE, if a malicious app intercepts the callback URL containing the `code`, it can steal the user's account. 
-PKCE fixes this:
-1. Our server generates a secret `verifier` and its hash, the `challenge`.
-2. We send the `challenge` to Google when redirecting the user.
-3. When exchanging the `code` later, we send the original `verifier` to Google.
-4. Google hashes the `verifier`. If it matches the `challenge`, Google knows we are the legitimate client.
+**Track:** Core Curriculum  
+**Prerequisites:** M1 (MVP Auth)  
+**Time:** ~2.5 hours  
 
 ---
 
-## 2. The Implementation Architecture
+## The Goal
+In this module, we implement "Sign in with Google" using the highly secure **Backend-First Authorization Code Flow**. 
 
-Let's trace the flow in `apps/api/src/modules/oauth/oauth.routes.ts`.
+Instead of letting the frontend handle Google tokens, the entire flow happens on the backend. The browser is merely redirected between URLs. This ensures Google tokens never touch JavaScript.
 
-### Step 1: Initiation (`/api/oauth/google/authorize`)
-The user clicks the "Sign in with Google" button. The frontend redirects them to this backend endpoint.
+---
 
-```typescript
-// Generate PKCE secrets
-const { verifier, challenge, state } = generatePKCE();
-pkceStore.set(state, { verifier, createdAt: Date.now() }); // Store temporarily
+## Step 1: Initiating the Flow (Frontend)
 
-// Redirect to Google's consent screen
-const params = new URLSearchParams({
-  client_id: env.GOOGLE_CLIENT_ID,
-  redirect_uri: env.GOOGLE_CALLBACK_URL,
-  response_type: "code",
-  state, // Prevents CSRF attacks
-  code_challenge: challenge,
-  code_challenge_method: "S256",
-  scope: "openid email profile",
-});
-res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+The frontend's only job is to provide an anchor tag.
+```tsx
+// apps/web/src/app/(auth)/login/page.tsx
+<a href="http://localhost:5000/api/oauth/google">
+  Sign in with Google
+</a>
 ```
 
-### Step 2: The Callback (`/api/oauth/google/callback`)
-After the user agrees, Google redirects them back to our server with a `code` in the URL query string.
+When the user clicks this link, they leave our Next.js application completely and hit our Express API.
 
-1. We retrieve the `verifier` from our temporary store using the `state` parameter.
-2. We make a POST request to Google's token endpoint, trading the `code` and `verifier` for an `access_token` and `id_token`.
-3. We use the `access_token` to fetch the user's profile information from Google.
+---
+
+## Step 2: The Login Endpoint & CSRF Protection (Backend)
+
+Open `apps/api/src/modules/oauth/oauth.controller.ts`.
+
+When the user hits `/api/oauth/google`, we must generate the Google login URL and redirect them to it. But we must include a `state` parameter to prevent CSRF attacks (e.g., an attacker tricking a user into logging into the attacker's account).
 
 ```typescript
-// Fetch user info from Google
-const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-  headers: { Authorization: `Bearer ${tokenData.access_token}` },
-});
-const googleUser = await userInfoRes.json();
+import crypto from "crypto";
+
+export function googleLogin(req, res) {
+  // 1. Generate a random "state" string
+  const state = crypto.randomBytes(32).toString("hex");
+
+  // 2. Store the state in a highly secure, short-lived HttpOnly cookie
+  res.cookie("oauth_state", state, {
+    httpOnly: true,
+    maxAge: 1000 * 60 * 10, // 10 minutes
+    sameSite: "lax",
+  });
+
+  // 3. Construct the Google URL
+  const googleAuthUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  googleAuthUrl.searchParams.append("client_id", process.env.GOOGLE_CLIENT_ID);
+  googleAuthUrl.searchParams.append("redirect_uri", "http://localhost:5000/api/oauth/google/callback");
+  googleAuthUrl.searchParams.append("response_type", "code");
+  googleAuthUrl.searchParams.append("scope", "email profile");
+  googleAuthUrl.searchParams.append("state", state); // 👈 Attach the state
+
+  // 4. Redirect the browser to Google
+  res.redirect(googleAuthUrl.toString());
+}
 ```
 
 ---
 
-## 3. Unifying the User Pipeline
+## Step 3: The Callback Endpoint
 
-Once we have the `googleUser` profile (which contains their Google ID, email, name, and picture), we hit a critical architectural juncture.
+The user logs into Google and grants permission. Google redirects their browser back to our API:
+`GET /api/oauth/google/callback?code=4/P7q...&state=xyz`
 
-We do **not** want two separate authentication systems. We want the OAuth user to be treated exactly like a password-credential user inside our application.
-
-### Account Linking and Creation
-In `oauthService.findOrCreateOAuthUser`:
-
-1. **Does the OAuth Account exist?** We check if this specific Google ID is already linked to a user. If yes, log them in.
-2. **Does the Email exist?** We check if a user registered via password with `alice@gmail.com`. If they did, and they just clicked "Sign in with Google", we automatically link their Google account to their existing password account.
-3. **New User?** If neither exists, we create a new `User` record (with a `null` passwordHash) and a linked `OAuthAccount` record.
-
-### Issuing Our Own Tokens
-This is the most important part: **We do not use Google's token inside our app.**
-
-Once we have verified the user's identity via Google, we generate our own 5-minute Access Token and 30-day Refresh Token, exactly like we do in the standard `/login` route.
-
+### 3.1 Validate the State
 ```typescript
-// 1. Create a session in our database
-const session = await createSession(user.id, deviceInfo, ipAddress);
+export async function googleCallback(req, res) {
+  const { code, state } = req.query;
+  const storedState = req.cookies.oauth_state;
 
-// 2. Generate our internal JWT
-const accessToken = signAccessToken({ sub: user.id, role: user.role });
+  // If the states don't match, the request was forged!
+  if (!state || !storedState || state !== storedState) {
+    return res.redirect("http://localhost:3000/login?error=csrf");
+  }
 
-// 3. Set the cookies
-res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, ...);
-res.cookie(COOKIE_NAMES.REFRESH_TOKEN, session.refreshToken, ...);
-
-// 4. Redirect the browser to the frontend dashboard
-res.redirect(`${env.WEB_URL}/dashboard`);
+  // Clear the state cookie since it was used
+  res.clearCookie("oauth_state");
 ```
 
-From this point forward, the frontend doesn't know (or care) that the user logged in with Google. It just has an `access_token` cookie, and the `authenticate` middleware processes it identically to a password login.
+### 3.2 Exchange the Code for Tokens
+Our backend makes a direct, server-to-server POST request to Google.
+```typescript
+  // Call Google's token endpoint
+  const tokenResponse = await axios.post("https://oauth2.googleapis.com/token", {
+    client_id: process.env.GOOGLE_CLIENT_ID,
+    client_secret: process.env.GOOGLE_CLIENT_SECRET,
+    code,
+    redirect_uri: "http://localhost:5000/api/oauth/google/callback",
+    grant_type: "authorization_code",
+  });
+
+  const { id_token, access_token } = tokenResponse.data;
+```
+
+### 3.3 Get the User Profile
+We use Google's `access_token` to fetch the user's profile.
+```typescript
+  const profileResponse = await axios.get("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { Authorization: `Bearer ${access_token}` },
+  });
+
+  const { email, name, id: googleId } = profileResponse.data;
+```
 
 ---
 
-## 4. Summary
+## Step 4: Account Linking & Token Issuance
 
-By keeping the OAuth flow entirely on the backend, we achieve:
-1. **Higher Security**: Tokens and secrets are never exposed to the browser javascript.
-2. **Unified Architecture**: Every user, regardless of how they logged in, receives the exact same internal JWTs and follows the exact same session rules.
+Now we have the verified `email` and `name` from Google. We pass this to our `authService`.
 
-Proceed to **M6: Advanced Security & Observability** to learn how we protect this entire system from brute force attacks and audit everything.
+```typescript
+// apps/api/src/modules/auth/auth.service.ts -> oauthLogin()
+
+export async function oauthLogin(email, name, googleId) {
+  // 1. Check if the user already exists
+  let user = await db.user.findUnique({ where: { email } });
+
+  if (user) {
+    // If they exist but signed up with a password earlier, we still log them in!
+    // We seamlessly "link" their Google login to their existing account based on email.
+  } else {
+    // 2. Create the user if they don't exist
+    user = await db.user.create({
+      data: {
+        email,
+        name,
+        // passwordHash is NULL!
+      }
+    });
+  }
+
+  // 3. Issue our own Application Tokens!
+  const accessToken = signAccessToken(user.id, user.role);
+  const rawRefreshToken = crypto.randomBytes(64).toString("hex");
+  await createSessionInDatabase(user.id, rawRefreshToken);
+
+  return { accessToken, refreshToken };
+}
+```
+
+Finally, the controller sets the cookies and redirects the user back to the Next.js dashboard!
+```typescript
+  // Back in oauth.controller.ts
+  const result = await authService.oauthLogin(email, name, googleId);
+
+  res.cookie("access_token", result.accessToken, getAccessTokenCookieOptions());
+  res.cookie("refresh_token", result.refreshToken, getRefreshTokenCookieOptions());
+
+  // Redirect to the frontend dashboard!
+  return res.redirect("http://localhost:3000/dashboard");
+}
+```
+
+---
+
+## Practice Exercises
+
+1. **State Validation Check:** Comment out the `state !== storedState` check in your callback endpoint. Notice how the flow still works. Now, manually change the `state` in the URL Google redirects you to. Why is it dangerous to accept this request without validation?
+2. **Account Merging:** Sign up normally with `your.email@gmail.com` and a password. Then log out, and use "Sign in with Google" with the exact same email. Notice how the backend logs you into the exact same account instead of throwing an error.
+3. **Null Password Security:** Try to log in via the normal email/password form using the email of an account that *only* ever used Google login. Does the backend crash? Check M1 to see why `if (!user || !user.passwordHash)` protects us.

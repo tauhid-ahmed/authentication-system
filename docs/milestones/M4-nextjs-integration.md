@@ -1,105 +1,72 @@
-# M4: Next.js Frontend Integration
+# M4: Next.js Integration (Implementation Guide)
 
-With our secure Express backend running, we now face the challenge of consuming it securely from a modern frontend framework. Next.js 15 uses the App Router, which blends Client Components (running in the browser) and Server Components (running in Node.js). 
-
-This hybrid model requires us to handle authentication across two completely different environments.
+**Track:** Core Curriculum  
+**Prerequisites:** M1 (MVP Auth)  
+**Time:** ~2 hours  
 
 ---
 
-## 1. The Cookie Problem
+## The Goal
+In previous modules, we built our Express.js backend API and secured it with `HttpOnly` cookies. However, consuming this secure API from a hybrid framework like Next.js App Router presents a unique challenge: **We have to authenticate from two completely different environments** (the Node.js server and the user's Browser).
 
-Our backend relies on `HttpOnly` cookies. 
+In this module, we implement the step-by-step code required to bridge Next.js with our backend.
 
-### Client Components (Browser)
-When a Client Component calls `fetch('/api/users/me')`, the browser automatically attaches the cookies (provided we set `credentials: 'include'`). This is straightforward.
+---
 
-### Server Components (Node.js)
-Server Components render on the Next.js server *before* being sent to the browser. They do NOT have a `window` object, and they do NOT automatically attach the user's cookies when making outgoing `fetch` calls.
+## Step 1: The `authFetchServer` Utility
 
-If a Server Component makes a `fetch` request to our Express API, the request will hit the API without any cookies, and the API will return `401 Unauthorized`.
+When a Next.js **Server Component** makes a `fetch()` request, it runs on the Next.js Node server. It does *not* have access to the browser's cookies automatically. We must manually extract the cookies from the incoming Next.js request and forward them to the Express API.
 
-#### The Solution: Manual Cookie Forwarding
-To make authenticated requests from Server Components, we must manually extract the cookies from the incoming Next.js request and forward them to our Express API.
+Open `apps/web/src/lib/fetch-server.ts`.
 
 ```typescript
-// apps/web/src/lib/fetch.ts -> authFetchServer()
-
 import { cookies } from "next/headers";
 
 export async function authFetchServer(url: string, options: RequestInit = {}) {
-  // 1. Get incoming cookies from the Next.js Request context
+  // 1. Get the cookies that the browser sent to Next.js
   const cookieStore = await cookies();
   
-  // 2. Format them into a single Cookie string
-  const allCookies = cookieStore.getAll()
+  // 2. Serialize them into a standard Cookie header string
+  const allCookies = cookieStore
+    .getAll()
     .map((c) => `${c.name}=${c.value}`)
     .join("; ");
 
-  // 3. Attach them to the outgoing fetch request
+  // 3. Attach the Cookie string to the outgoing request
   const fetchOptions = {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      Cookie: allCookies, 
+      Cookie: allCookies, // 👈 This is the magic
       ...options.headers,
     },
   };
 
-  // 4. Make the request to the Express API
-  return fetch(`${API_URL}${url}`, fetchOptions);
+  // 4. Send the request to the Express API
+  return fetch(`${process.env.NEXT_PUBLIC_API_URL}${url}`, fetchOptions);
 }
 ```
 
----
-
-## 2. Next.js Middleware (UX vs Security)
-
-In Next.js, `middleware.ts` runs on the Edge runtime for *every* request before the page renders. We use it to handle UI routing.
-
-If a user tries to visit `/dashboard` but they don't have a token cookie, the middleware redirects them to `/login`.
-
-### The Golden Rule of Frontend Middleware
-**Frontend middleware is for User Experience, NOT Security.**
-
-Why? Because an attacker can simply bypass your frontend and make HTTP requests directly to your Express API using Postman or `curl`. 
-
-The Next.js middleware just prevents the annoying flash of a blank page before a redirect. The **True Security** lives exclusively in the Express backend `authenticate` middleware.
-
-```typescript
-// apps/web/src/middleware.ts
-export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-  
-  // We check for the mere existence of the cookie. 
-  // We do NOT verify the signature here (too slow for edge).
-  const hasToken = request.cookies.has("access_token") || request.cookies.has("refresh_token");
-
-  // Redirect unauthenticated users away from protected pages
-  if (!hasToken && isProtectedRoute) {
-    return NextResponse.redirect(new URL("/login", request.url));
-  }
-
-  // Redirect authenticated users away from the login page
-  if (hasToken && isAuthRoute) {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
-  }
-}
-```
+This single utility is what allows our Server Components to fetch protected data securely!
 
 ---
 
-## 3. Server-Side Authentication Checks
+## Step 2: Extracting the User Object (Server-Side)
 
-When rendering a protected page, we want to know *who* the user is, so we can display their profile or decide what UI elements to show (e.g., hiding the "Admin Panel" link).
+Now that we can make authenticated requests from the server, we need a standard way to get the current user's profile before we render a page. 
 
-We use our `authFetchServer` helper to ask the API.
+Open `apps/web/src/lib/auth.ts`.
 
 ```typescript
-// apps/web/src/lib/auth.ts
+import { authFetchServer } from "./fetch-server";
+
 export async function getCurrentUser() {
   try {
+    // Call the /me endpoint using our server-side utility
     const res = await authFetchServer("/api/auth/me", {
-      next: { revalidate: 0 }, // Never cache this user data!
+      // CRITICAL: We NEVER want Next.js to cache this response.
+      // If we cached it, User A might see User B's profile!
+      next: { revalidate: 0 }, 
     });
 
     if (!res.ok) return null;
@@ -107,41 +74,91 @@ export async function getCurrentUser() {
     const data = await res.json();
     return data.data.user;
   } catch {
-    return null;
+    return null; // Express API is down or token is invalid
   }
-}
-```
-
-Then, in our Server Components, we protect the route layout:
-
-```tsx
-// apps/web/src/app/(protected)/layout.tsx
-export default async function ProtectedLayout({ children }) {
-  const user = await getCurrentUser();
-
-  // If the API rejected the token, kick them to login
-  if (!user) {
-    redirect("/login");
-  }
-
-  return (
-    <div>
-      <nav>
-        {/* Role-based UI rendering */}
-        {user.role !== "USER" && <Link href="/admin">Admin</Link>}
-      </nav>
-      {children}
-    </div>
-  );
 }
 ```
 
 ---
 
-## 4. Summary
+## Step 3: Protecting the UI with Middleware
 
-Our split architecture gives us the best of both worlds:
-1. **Express API**: Handles the heavy lifting—database queries, cryptographic token signing/verification, and strict security rules.
-2. **Next.js Web**: Focuses purely on rendering the UI, forwarding cookies to the API when Server Components need data.
+If a user tries to load `/dashboard` without being logged in, we want to immediately redirect them to `/login`. We *could* do this in the Server Component, but Next.js provides `middleware.ts` which runs at the **Edge**, long before React starts rendering.
 
-Proceed to **M5: OAuth & Third-Party Logins** to learn how we integrate "Sign in with Google" seamlessly into this architecture.
+Open `apps/web/src/proxy.ts` (or `middleware.ts`).
+
+### The Golden Rule of Next.js Middleware
+> [!WARNING]
+> Next.js Edge Middleware cannot verify JWT signatures because it lacks access to native Node `crypto` modules. **Frontend middleware is for User Experience, NOT Security.** Your Express backend is responsible for true security.
+
+```typescript
+import { NextResponse, NextRequest } from "next/server";
+
+export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // 1. Check if the token cookie EXISTS. We do NOT verify it.
+  const hasToken = request.cookies.has("access_token") || request.cookies.has("refresh_token");
+
+  const isProtectedRoute = pathname.startsWith("/dashboard") || pathname.startsWith("/admin");
+  const isAuthRoute = pathname === "/login" || pathname === "/signup";
+
+  // 2. UX Redirect: Kick unauthenticated users out
+  if (!hasToken && isProtectedRoute) {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+
+  // 3. UX Redirect: Kick logged-in users away from the login page
+  if (hasToken && isAuthRoute) {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
+  }
+
+  // Allow the request to proceed to the Server Component
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+};
+```
+
+---
+
+## Step 4: The Protected Layout (Server Component)
+
+Finally, we combine everything in a layout that wraps our protected routes. 
+
+Open `apps/web/src/app/(protected)/layout.tsx`.
+
+```tsx
+import { getCurrentUser } from "@/lib/auth";
+import { redirect } from "next/navigation";
+
+export default async function ProtectedLayout({ children }) {
+  // 1. Fetch the user using the cookies
+  const user = await getCurrentUser();
+
+  // 2. The Next.js middleware said they had a cookie, but the Express API 
+  // might have rejected it (expired or revoked). If so, kick them out!
+  if (!user) {
+    redirect("/login");
+  }
+
+  return (
+    <div className="app-container">
+      <Sidebar user={user} />
+      <main>{children}</main>
+    </div>
+  );
+}
+```
+
+Notice how the `user` object is fetched *once* in the Layout on the Server, and can be passed down to Client Components as React props, perfectly keeping state in memory without exposing tokens!
+
+---
+
+## Practice Exercises
+
+1. **Test the Cache:** In `apps/web/src/lib/auth.ts`, remove `next: { revalidate: 0 }`. Log in, change your name in the database, and refresh. Notice how your name doesn't update? This is why preventing caching on user data is critical.
+2. **Bypass the Middleware:** In Chrome DevTools, add a fake cookie named `access_token` with the value `fake-token`. Refresh the page. You will bypass the Next.js `middleware.ts` (because the cookie *exists*), but the Express API will reject it and the `layout.tsx` will redirect you back to login. This proves middleware is just for UX!
+3. **Trace the Network:** Open your Next.js terminal logs. How many times is `/api/auth/me` called when you load the dashboard?

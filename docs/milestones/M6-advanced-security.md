@@ -1,132 +1,136 @@
-# M6: Advanced Security & Observability
+# M6: Advanced Security (Implementation Guide)
 
-In modern web architecture, being functionally correct isn't enough. Your authentication system must be resilient to attacks and observable when things go wrong.
-
-In this milestone, we cover the security middleware and the comprehensive audit logging system that transforms a "toy" project into an "Enterprise-Ready" system.
+**Track:** Core Curriculum  
+**Prerequisites:** M1 (MVP Auth)  
+**Time:** ~1.5 hours  
 
 ---
 
-## 1. Security Middleware (Express Helmet)
+## The Goal
+Authentication proves who someone is, but how do we prevent attackers from abusing our API endpoints? If an attacker tries to brute-force a password or spam the `/signup` route, they could take down our database or figure out user passwords.
 
-HTTP headers provide significant protection against common web vulnerabilities. We use the `helmet` package to automatically set secure HTTP headers.
+In this module, we implement **Rate Limiting** and **Security Headers**.
+
+---
+
+## Step 1: Rate Limiting (Backend)
+
+We cannot use an in-memory rate limiter (like a simple JavaScript object) because if we scale our API to multiple servers (or serverless functions), each server would have its own memory, rendering the rate limit useless.
+
+We must use a centralized store: **Redis**. We use Upstash Redis for serverless-friendly, low-latency rate limiting.
+
+### 1.1 The Redis Client
+Open `apps/api/src/utils/redis.ts`.
 
 ```typescript
-// apps/api/src/app.ts
+import { Redis } from "@upstash/redis";
+
+export const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+```
+
+### 1.2 The Rate Limiter Middleware
+Open `apps/api/src/middlewares/rateLimiter.ts`. We use the `@upstash/ratelimit` library.
+
+```typescript
+import { Ratelimit } from "@upstash/ratelimit";
+import { redis } from "../utils/redis";
+
+// Create a sliding window rate limiter: 5 requests per 10 seconds
+const loginLimiter = new Ratelimit({
+  redis: redis,
+  limiter: Ratelimit.slidingWindow(5, "10 s"),
+  analytics: true,
+});
+
+export async function rateLimitLogin(req, res, next) {
+  // Use the IP address as the identifier. 
+  // In production behind a proxy (like Nginx or Vercel), use req.headers["x-forwarded-for"]
+  const ip = req.headers["x-forwarded-for"] || req.ip || "127.0.0.1";
+
+  const { success, limit, remaining, reset } = await loginLimiter.limit(`login_ratelimit_${ip}`);
+
+  // Set standard RateLimit headers for the frontend to read
+  res.setHeader("X-RateLimit-Limit", limit);
+  res.setHeader("X-RateLimit-Remaining", remaining);
+  res.setHeader("X-RateLimit-Reset", reset);
+
+  if (!success) {
+    return res.status(429).json({ 
+      error: "Too many login attempts. Please try again later." 
+    });
+  }
+
+  next();
+}
+```
+
+### 1.3 Applying the Rate Limiter
+Open `apps/api/src/modules/auth/auth.routes.ts`.
+
+```typescript
+// We strictly rate limit the login and signup routes.
+// We DO NOT strictly rate limit the /me or /refresh routes because 
+// the frontend might naturally call them multiple times during navigation.
+
+router.post("/login", rateLimitLogin, authController.login);
+router.post("/signup", rateLimitLogin, authController.signup);
+```
+
+---
+
+## Step 2: Security Headers (Helmet.js)
+
+By default, Express exposes headers like `X-Powered-By: Express`, which tells attackers exactly what technology stack you are using. It also lacks headers that prevent Cross-Site Scripting (XSS) and Clickjacking.
+
+Open `apps/api/src/server.ts`.
+
+```typescript
 import helmet from "helmet";
 
+const app = express();
+
+// Helmet automatically adds 11 secure HTTP headers.
+// - Removes X-Powered-By
+// - Adds X-Frame-Options: SAMEORIGIN (Prevents Clickjacking / IFrames)
+// - Adds X-Content-Type-Options: nosniff
+// - Adds Strict-Transport-Security (HSTS)
 app.use(helmet());
 ```
 
-What does `helmet` actually do?
-- **X-Powered-By**: Removes the header that tells attackers we are using Express.
-- **X-Frame-Options**: Prevents Clickjacking by disallowing our site from being embedded in an iframe.
-- **Strict-Transport-Security (HSTS)**: Tells browsers to *only* access our site over HTTPS.
-- **X-Content-Type-Options**: Prevents MIME-sniffing, ensuring the browser respects our declared content types.
-
 ---
 
-## 2. Cross-Origin Resource Sharing (CORS)
+## Step 3: Handling 429 in the Frontend
 
-By default, web browsers prevent Javascript on `http://localhost:3000` (Next.js) from making HTTP requests to `http://localhost:5000` (Express) due to the Same-Origin Policy.
+When the backend returns `429 Too Many Requests`, the frontend needs to handle it gracefully instead of just throwing a generic "Error".
 
-CORS headers tell the browser: "It is safe to let `localhost:3000` talk to me."
+Open `apps/web/src/app/(auth)/login/page.tsx` and look at the submit handler.
 
-```typescript
-// apps/api/src/app.ts
-app.use(
-  cors({
-    origin: env.ALLOWED_ORIGINS.split(","),
-    credentials: true, // CRITICAL: This allows the browser to send cookies!
-  })
-);
-```
+```tsx
+try {
+  const res = await fetch("http://localhost:5000/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 
-If `credentials: true` is missing, the browser will strip the `access_token` cookie from the `fetch` request, and the API will reject it with a 401 error.
-
----
-
-## 3. Rate Limiting (Preventing Brute Force)
-
-A login endpoint is the #1 target for brute force and credential stuffing attacks. We must limit how fast an attacker can guess passwords.
-
-We use `express-rate-limit` to restrict requests based on the IP address.
-
-```typescript
-// apps/api/src/middlewares/rateLimiter.ts
-export const loginRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 failed requests per `window`
-  message: "Too many login attempts from this IP, please try again after 15 minutes",
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-});
-```
-
-We apply different limits to different endpoints:
-- **Global API Limiter**: 100 requests per 15 mins (prevents general DDoS).
-- **Login Limiter**: 5 requests per 15 mins (prevents brute forcing passwords).
-- **Refresh Limiter**: 20 requests per 15 mins (prevents token flooding).
-
----
-
-## 4. Comprehensive Audit Logging
-
-"I didn't change that user's role to Super Admin!"
-Without logs, it's their word against yours. With audit logs, you have proof.
-
-Every significant authentication event in our system generates an `AuditLog` database entry.
-
-```prisma
-model AuditLog {
-  id        String      @id @default(cuid())
-  userId    String?     
-  event     AuditEvent  // LOGIN_SUCCESS, ROLE_CHANGED, TOKEN_REUSE_DETECTED
-  ipAddress String?
-  userAgent String?
-  metadata  Json?       
-  createdAt DateTime    @default(now())
-}
-```
-
-### Capturing the Context
-When an event happens, we capture the IP Address and the User-Agent (device info).
-
-```typescript
-// apps/api/src/utils/device.ts
-export function extractIpAddress(req: Request): string {
-  const forwardedFor = req.headers["x-forwarded-for"];
-  if (forwardedFor) {
-    return Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor.split(",")[0];
+  if (res.status === 429) {
+    // 429 means Rate Limited
+    const resetTime = res.headers.get("X-RateLimit-Reset");
+    const secondsLeft = Math.ceil((Number(resetTime) - Date.now()) / 1000);
+    setError(`Too many attempts. Try again in ${secondsLeft} seconds.`);
+    return;
   }
-  return req.ip || req.socket.remoteAddress || "0.0.0.0";
+
+  // Handle other errors...
 }
 ```
 
-*Note: If your API is behind a reverse proxy like Nginx or AWS API Gateway, `req.ip` will be the proxy's IP. You MUST read the `X-Forwarded-For` header to get the actual user's IP.*
-
-### The Audit Trail in Action
-When a user logs in, we trigger the logging service in the background:
-
-```typescript
-// apps/api/src/modules/auth/auth.service.ts
-await auditService.logEvent({
-  userId: user.id,
-  event: "LOGIN_SUCCESS",
-  ipAddress,
-  userAgent: deviceInfo,
-});
-```
-
-These logs provide immense value for:
-1. **Compliance**: GDPR, SOC2, HIPAA require tracking who accessed what.
-2. **Security Incident Response**: If a token is stolen, we can trace exactly when and from which IP the attacker logged in.
-3. **User History**: In the frontend, we can display a "Recent Activity" tab showing the user their own login history (e.g., "Logged in from Chrome on macOS in New York").
-
 ---
 
-## 5. Summary
+## Practice Exercises
 
-We have transformed our authentication system from a simple token generator into a secure, hardened, and observable architecture. 
-
-We protect against clickjacking, brute-forcing, and replay attacks, all while logging every move into an immutable audit trail.
-
-You have now completed the core backend architecture of a Production-Grade Authentication System. 
+1. **Trigger the Limiter:** Try to submit the login form 6 times very quickly. Watch the Network tab. What status code is returned? What does the UI show?
+2. **Inspect Headers:** Open the Network tab, click on any successful API request, and look at the `Response Headers`. Can you spot the `X-RateLimit-*` headers? Can you find `X-Frame-Options`?
+3. **Change the Limit:** Go to the backend rate limiter middleware and change it to 1 request per 60 seconds. Restart the backend and verify the strictness.

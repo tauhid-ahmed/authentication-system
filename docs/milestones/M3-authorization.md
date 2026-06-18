@@ -1,15 +1,21 @@
-# M3: Authorization & Role-Based Access Control (RBAC)
+# M3: Authorization (RBAC) Implementation Guide
 
-Authentication (AuthN) answers the question: **"Who are you?"**
-Authorization (AuthZ) answers the question: **"What are you allowed to do?"**
-
-In this milestone, we implement Role-Based Access Control (RBAC) to ensure that users can only access the data and perform the actions permitted by their role.
+**Track:** Core Curriculum  
+**Prerequisites:** M1 (MVP Auth)  
+**Time:** ~1.5 hours  
 
 ---
 
-## 1. Defining Roles
+## The Goal
+Authentication (M1) proved *who* the user is. Authorization proves *what* they are allowed to do. 
 
-Our system uses a simple hierarchical role structure defined in the Prisma schema (`apps/api/prisma/schema.prisma`):
+In this module, we implement **Role-Based Access Control (RBAC)** across the entire stack. We will protect sensitive API endpoints on the backend, and conditionally hide UI elements on the frontend based on the user's role.
+
+---
+
+## Step 1: The Database Role Enum
+
+Our Prisma schema defines a `Role` enum for the User model.
 
 ```prisma
 enum Role {
@@ -18,143 +24,148 @@ enum Role {
   SUPER_ADMIN
 }
 ```
-
-The hierarchy implies permissions:
-- `USER`: Can access their own profile and sessions.
-- `ADMIN`: Can do everything a `USER` can, plus view all users in the system.
-- `SUPER_ADMIN`: Can do everything an `ADMIN` can, plus change the roles of other users.
+By default, all new signups receive the `USER` role. The `SUPER_ADMIN` role is strictly for the system owner, and `ADMIN` is for staff.
 
 ---
 
-## 2. Embedding Roles in the Token
+## Step 2: Backend API Protection
 
-How does the API know the user's role without querying the database on every request? 
-We embed the role directly into the **Access Token (JWT) payload**.
+Never trust the frontend. Just because you hide a "Delete User" button in React doesn't stop an attacker from opening Postman and sending a `DELETE` request directly to your API.
 
-```typescript
-// Payload generated during login
-const payload = {
-  sub: user.id,
-  role: user.role, // e.g., "ADMIN"
-};
-```
+The backend must explicitly verify the role for every sensitive endpoint.
 
-When the `authenticate` middleware runs, it reads the role from the verified JWT and attaches it to `req.user`.
+### 2.1 The `requireRole` Middleware
+We create a higher-order middleware function. Open `apps/api/src/middlewares/requireRole.ts`.
 
 ```typescript
-// apps/api/src/middlewares/authenticate.ts
-req.user = {
-  id: payload.sub,
-  role: payload.role,
-};
-```
+import { NextFunction, Request, Response } from "express";
 
----
-
-## 3. The `authorize` Middleware
-
-With the role attached to `req.user`, we can create a secondary middleware that runs *after* authentication to check permissions.
-
-```typescript
-// apps/api/src/middlewares/authorize.ts
-export function authorize(minimumRole: Role) {
+export function requireRole(allowedRoles: string[]) {
+  // Return an Express middleware function
   return (req: Request, res: Response, next: NextFunction) => {
-    // 1. Ensure user is authenticated (should be guaranteed by authenticate middleware)
-    if (!req.user) {
-      sendError(res, "Unauthorized", 401);
-      return;
+    
+    // req.user is guaranteed to exist here because this middleware 
+    // is always placed AFTER the `authenticate` middleware.
+    const userRole = req.user?.role;
+
+    if (!userRole) {
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-    // 2. Check if the user's role meets the minimum requirement
-    if (!hasMinimumRole(req.user.role, minimumRole)) {
-      sendError(res, "Forbidden: Insufficient permissions.", 403);
-      return;
+    // Check if the user's role is in the allowed list
+    if (!allowedRoles.includes(userRole)) {
+      // 403 Forbidden means: "I know who you are, but you aren't allowed to do this."
+      return res.status(403).json({ error: "FORBIDDEN" });
     }
 
+    // Role is valid, proceed to the controller
     next();
   };
 }
 ```
 
-### The Hierarchy Logic
-We need a helper function to understand that `SUPER_ADMIN` > `ADMIN` > `USER`.
-We share this logic between the frontend and backend in `@auth/shared/src/index.ts`:
+### 2.2 Applying the Middleware to Routes
+Now we apply this to our router. Open `apps/api/src/modules/users/users.routes.ts`.
 
 ```typescript
-const ROLE_HIERARCHY = ["USER", "ADMIN", "SUPER_ADMIN"];
+import { Router } from "express";
+import { authenticate } from "../../middlewares/authenticate";
+import { requireRole } from "../../middlewares/requireRole";
 
-export function hasMinimumRole(userRole: string, requiredRole: string): boolean {
-  const userLevel = ROLE_HIERARCHY.indexOf(userRole);
-  const requiredLevel = ROLE_HIERARCHY.indexOf(requiredRole);
-  return userLevel >= requiredLevel;
-}
+const router = Router();
+
+// Notice the order:
+// 1. `authenticate` verifies the JWT and attaches req.user
+// 2. `requireRole` checks req.user.role
+// 3. `deleteUser` actually performs the action
+
+router.delete(
+  "/:id",
+  authenticate,
+  requireRole(["ADMIN", "SUPER_ADMIN"]), // Only admins can delete
+  userController.deleteUser
+);
+
+export default router;
 ```
 
 ---
 
-## 4. Applying Authorization to Routes
+## Step 3: Frontend UI Protection
 
-In our route definitions, we chain the middlewares. Order is absolutely critical.
+Now that the backend is secure, we need to provide a good UX on the frontend. A `USER` should not see links to an Admin Dashboard, nor should they see buttons that will just result in a `403 Forbidden` error.
+
+### 3.1 The User Object in Memory
+Recall from the F2 module that our frontend fetches the User Object on load and stores it in React memory (or passes it down from a Server Component).
 
 ```typescript
-// apps/api/src/modules/users/users.routes.ts
-
-// 1. Apply `authenticate` to ALL routes in this router
-router.use(authenticate);
-
-// 2. Self-service routes (Only requires USER level - implied by authenticate)
-router.get("/me", usersController.getMe);
-router.patch("/me", usersController.updateProfile);
-
-// 3. Admin routes (Requires ADMIN level)
-router.get("/", authorize("ADMIN"), usersController.listUsers);
-
-// 4. Super Admin routes (Requires SUPER_ADMIN level)
-router.patch("/roles", authorize("SUPER_ADMIN"), usersController.updateRole);
+// The object returned from /api/auth/me
+type UserResponse = {
+  id: string;
+  email: string;
+  name: string;
+  role: "USER" | "ADMIN" | "SUPER_ADMIN"; // We have the role!
+};
 ```
 
-### Business Logic Authorization
-Sometimes middleware isn't enough. For example, a `USER` can revoke their *own* session, but not someone else's. This requires checking the database, so the authorization logic must live in the **Service**.
+### 3.2 Conditionally Rendering UI in Server Components
+In Next.js App Router, Server Components run on the Node server. We can check the role before we even send the HTML to the browser.
 
-```typescript
-// apps/api/src/modules/sessions/sessions.service.ts
-async revokeSession(userId: string, sessionId: string) {
-  const session = await sessionsRepository.findById(sessionId);
-  
-  // Service-level authorization check
-  if (session.userId !== userId) {
-    throw new Error("FORBIDDEN"); // Can't revoke another user's session
+Open `apps/web/src/app/(protected)/layout.tsx`.
+
+```tsx
+import { getCurrentUser } from "@/lib/auth";
+
+export default async function ProtectedLayout({ children }) {
+  const user = await getCurrentUser();
+
+  return (
+    <div>
+      <nav>
+        <Link href="/dashboard">Dashboard</Link>
+        
+        {/* Only render this link if the user is an Admin */}
+        {(user.role === "ADMIN" || user.role === "SUPER_ADMIN") && (
+          <Link href="/admin">Admin Panel</Link>
+        )}
+      </nav>
+      {children}
+    </div>
+  );
+}
+```
+
+### 3.3 Protecting Whole Pages (Next.js)
+What if a `USER` manually types `http://localhost:3000/admin` into their URL bar? 
+We need to protect the page itself, not just the navigation link.
+
+Open `apps/web/src/app/(protected)/admin/page.tsx`.
+
+```tsx
+import { getCurrentUser } from "@/lib/auth";
+import { redirect } from "next/navigation";
+
+export default async function AdminPage() {
+  const user = await getCurrentUser();
+
+  // If they aren't an admin, kick them back to the dashboard
+  if (!user || (user.role !== "ADMIN" && user.role !== "SUPER_ADMIN")) {
+    redirect("/dashboard");
   }
-  
-  // Proceed with revocation...
+
+  return (
+    <div>
+      <h1>Super Secret Admin Dashboard</h1>
+      {/* Admin content here */}
+    </div>
+  );
 }
 ```
 
 ---
 
-## 5. Security Pitfall: Privilege Escalation
+## Practice Exercises
 
-What if a rogue `ADMIN` tries to change their own role to `SUPER_ADMIN`? 
-We must explicitly prevent privilege escalation attacks in the service logic.
-
-```typescript
-// apps/api/src/modules/users/users.service.ts -> updateRole()
-
-// Guard 1: Only SUPER_ADMIN can change roles
-if (!hasMinimumRole(actorRole, "SUPER_ADMIN")) {
-  throw new Error("INSUFFICIENT_ROLE");
-}
-
-// Guard 2: Cannot change your own role (prevents lockout accidents and abuse)
-if (actorId === data.userId) {
-  throw new Error("CANNOT_CHANGE_OWN_ROLE");
-}
-```
-
----
-
-## 6. What's Next?
-
-Our API is fully protected, but we need to ensure the frontend respects these roles as well. If an API route requires `ADMIN`, the frontend shouldn't even show the link to the Admin Panel for a regular `USER`.
-
-Proceed to **M4: Next.js Frontend Integration** to see how we consume our secure API using React Server Components.
+1. **Test Backend Security:** Log in with a normal `USER` account. Use Postman or `curl` to send a request to a route protected by `requireRole(["ADMIN"])`. Ensure you get a `403 Forbidden` response.
+2. **Promote Yourself:** Open Prisma Studio (`npx prisma studio`), find your user record, and change your role from `USER` to `ADMIN`. Refresh your browser dashboard. Notice how the Admin links magically appear because the `/me` endpoint returned your new role.
+3. **Add a Role:** Add a `MANAGER` role to the Prisma enum. Run the migration. Update the backend middleware to allow `MANAGER` to access a specific new endpoint. Update the frontend to show a Manager-specific UI.
