@@ -149,8 +149,97 @@ export async function verifyMfaLogin(req, res) {
 
 ---
 
+## Step 5: MFA Backup Codes (Account Recovery)
+
+What happens if a user **loses their phone**? Without a recovery mechanism, they are permanently locked out of their account. Backup codes are the industry-standard solution.
+
+### How Backup Codes Work
+1. When the user enables MFA, the server generates **10 one-time backup codes** (e.g., `7f3a-b2c9`).
+2. The user downloads or prints these codes and stores them somewhere safe.
+3. Each code can be used **once** instead of the TOTP pin to log in.
+4. Once all 10 codes are used, the user must regenerate them.
+
+### 5.1 Database Schema
+```prisma
+model MfaBackupCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String    // SHA-256 hash of the 8-character code
+  usedAt    DateTime? // Null until consumed
+  createdAt DateTime  @default(now())
+}
+```
+
+### 5.2 Generating Backup Codes on MFA Enable
+```typescript
+import { createHash } from "crypto";
+
+export async function generateBackupCodes(userId: string) {
+  // Generate 10 random 8-character codes (formatted as XXXX-XXXX)
+  const rawCodes = Array.from({ length: 10 }, () => {
+    const bytes = crypto.randomBytes(4).toString("hex").toUpperCase();
+    return `${bytes.slice(0, 4)}-${bytes.slice(4, 8)}`;
+  });
+
+  // Hash and store each code
+  await db.$transaction(
+    rawCodes.map((code) =>
+      db.mfaBackupCode.create({
+        data: {
+          userId,
+          codeHash: createHash("sha256").update(code).digest("hex"),
+        },
+      })
+    )
+  );
+
+  // Return the RAW codes to the user — this is the ONLY time they are shown
+  return rawCodes;
+}
+```
+
+> [!CAUTION]
+> Show the raw backup codes **only once**, immediately after generation. After that, only hashes are stored. If the user loses the codes, they must regenerate the entire set (which invalidates all old ones).
+
+### 5.3 Using a Backup Code at Login
+When the user submits a backup code instead of a TOTP pin in `POST /verify-mfa`:
+
+```typescript
+export async function verifyWithBackupCode(userId: string, submittedCode: string) {
+  const submittedHash = createHash("sha256").update(submittedCode).digest("hex");
+
+  // Find the matching, unused backup code
+  const backupCode = await db.mfaBackupCode.findFirst({
+    where: { userId, codeHash: submittedHash, usedAt: null },
+  });
+
+  if (!backupCode) {
+    throw new AppError("INVALID_BACKUP_CODE", 401);
+  }
+
+  // Mark it as used — it can never be used again
+  await db.mfaBackupCode.update({
+    where: { id: backupCode.id },
+    data: { usedAt: new Date() },
+  });
+
+  // Optionally: warn the user how many codes remain
+  const remainingCodes = await db.mfaBackupCode.count({
+    where: { userId, usedAt: null },
+  });
+
+  return { success: true, remainingCodes };
+}
+```
+
+---
+
 ## Practice Exercises
 
-1. **Scan the Code:** Use Google Authenticator or Authy on your phone to scan the generated QR code. 
+1. **Scan the Code:** Use Google Authenticator or Authy on your phone to scan the generated QR code.
 2. **Test Expiration:** Look at the authenticator app. Wait for the circle to deplete so a new code generates. Use the *old* code. Ensure the backend rejects it.
 3. **Bypass Attempt:** Try to hit `POST /verify-mfa` without passing the `mfaToken`. Why is the temporary `mfaToken` JWT required? (Hint: The backend needs to know *who* is trying to log in statelessly!).
+4. **Backup Code Flow:** Enable MFA, generate backup codes, log out. On the login screen, use a backup code instead of the 6-digit pin. Verify the code is marked `usedAt` in the database. Try using the same code again — what happens?
+5. **Regenerate Codes:** Build an endpoint `POST /api/mfa/backup-codes/regenerate` that deletes all existing backup codes for the user and generates a fresh set of 10. What security check should you perform before allowing this operation?
+

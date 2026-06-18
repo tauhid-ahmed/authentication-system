@@ -129,8 +129,156 @@ try {
 
 ---
 
+## Step 4: Audit Logging (Backend)
+
+Rate limiting stops automated abuse, but it doesn't tell you *what* happened. **Audit logging** creates a permanent, tamper-evident trail of every significant security event.
+
+### What to log
+Every security-relevant action should be recorded:
+
+| Event | When it fires |
+|-------|--------------|
+| `LOGIN_SUCCESS` | User logs in |
+| `LOGIN_FAILED` | Wrong password (note: do NOT log which field was wrong) |
+| `LOGOUT` | User logs out |
+| `TOKEN_REFRESH` | Access token silently refreshed |
+| `TOKEN_REUSE_DETECTED` | A revoked refresh token was used (possible theft) |
+| `PASSWORD_RESET_REQUESTED` | User clicked "Forgot Password" |
+| `PASSWORD_CHANGED` | Password was successfully reset |
+| `MFA_ENABLED` / `MFA_DISABLED` | User changed 2FA status |
+| `ACCOUNT_LOCKED` | Too many failed attempts |
+| `ROLE_CHANGED` | Admin promoted/demoted a user |
+
+### The Audit Log Schema
+```prisma
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?  // Null for failed logins where user doesn't exist
+  event     String   // e.g. "LOGIN_FAILED"
+  ipAddress String?
+  userAgent String?
+  metadata  Json?    // Any extra data (e.g. { "attemptedEmail": "..." })
+  createdAt DateTime @default(now())
+}
+```
+
+### The Audit Service
+Open `apps/api/src/utils/audit.ts`.
+
+```typescript
+export async function auditLog(params: {
+  event: string;
+  userId?: string;
+  req: Request;
+  metadata?: Record<string, unknown>;
+}) {
+  // Non-blocking: we don't await this. An audit log failure should
+  // never crash or slow down the main authentication flow.
+  db.auditLog.create({
+    data: {
+      event: params.event,
+      userId: params.userId ?? null,
+      ipAddress: params.req.headers["x-forwarded-for"] as string || params.req.ip,
+      userAgent: params.req.headers["user-agent"],
+      metadata: params.metadata ?? {},
+    },
+  }).catch(err => console.error("[AuditLog] Failed to write:", err));
+}
+```
+
+### Wiring it into Login
+```typescript
+// auth.service.ts -> login()
+
+const isValid = await bcrypt.compare(password, user.passwordHash);
+
+if (!isValid) {
+  // Log the failure (not which field was wrong!)
+  auditLog({ event: "LOGIN_FAILED", userId: user.id, req });
+  throw new AppError("INVALID_CREDENTIALS", 401);
+}
+
+// Log success
+auditLog({ event: "LOGIN_SUCCESS", userId: user.id, req });
+```
+
+### Why Audit Logs Are Non-Blocking
+Notice the `catch` instead of `await`. Audit logging is important, but it must never be a critical path. If your database or logging service has a temporary outage, your users should still be able to log in. The `.catch` prevents the promise rejection from crashing Node.js.
+
+---
+
+## Step 5: Account Lockout (Brute Force Protection)
+
+Rate limiting by IP address is good, but a sophisticated attacker can rotate IPs. **Account lockout** provides a second layer: after a fixed number of failed attempts on a *specific account*, that account is temporarily frozen.
+
+### The Database Schema
+```prisma
+model User {
+  // ... existing fields
+  failedLoginAttempts Int      @default(0)
+  lockedUntil         DateTime? // Null means not locked
+}
+```
+
+### Lockout Logic in the Login Service
+```typescript
+export async function login(email, password, req) {
+  const user = await db.user.findUnique({ where: { email } });
+  if (!user || !user.passwordHash) throw new AppError("INVALID_CREDENTIALS", 401);
+
+  // STEP 1: Check if the account is locked
+  if (user.lockedUntil && user.lockedUntil > new Date()) {
+    const secondsLeft = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 1000);
+    throw new AppError("ACCOUNT_LOCKED", 423, `Account is locked. Try again in ${secondsLeft} seconds.`);
+  }
+
+  // STEP 2: Verify password
+  const isValid = await bcrypt.compare(password, user.passwordHash);
+
+  if (!isValid) {
+    const MAX_ATTEMPTS = 5;
+    const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+
+    const newAttempts = user.failedLoginAttempts + 1;
+    const isNowLocked = newAttempts >= MAX_ATTEMPTS;
+
+    // Increment failed attempts (and lock if threshold reached)
+    await db.user.update({
+      where: { id: user.id },
+      data: {
+        failedLoginAttempts: newAttempts,
+        lockedUntil: isNowLocked ? new Date(Date.now() + LOCKOUT_DURATION_MS) : null,
+      },
+    });
+
+    if (isNowLocked) {
+      auditLog({ event: "ACCOUNT_LOCKED", userId: user.id, req });
+      throw new AppError("ACCOUNT_LOCKED", 423, "Too many failed attempts. Account locked for 15 minutes.");
+    }
+
+    throw new AppError("INVALID_CREDENTIALS", 401);
+  }
+
+  // STEP 3: Successful login — reset the counter
+  await db.user.update({
+    where: { id: user.id },
+    data: { failedLoginAttempts: 0, lockedUntil: null },
+  });
+
+  // Continue with token issuance...
+}
+```
+
+> [!NOTE]
+> HTTP status `423 Locked` is the correct code for a locked account. It is distinct from `401 Unauthorized` (wrong credentials) and `429 Too Many Requests` (rate limited by IP).
+
+---
+
 ## Practice Exercises
 
 1. **Trigger the Limiter:** Try to submit the login form 6 times very quickly. Watch the Network tab. What status code is returned? What does the UI show?
 2. **Inspect Headers:** Open the Network tab, click on any successful API request, and look at the `Response Headers`. Can you spot the `X-RateLimit-*` headers? Can you find `X-Frame-Options`?
 3. **Change the Limit:** Go to the backend rate limiter middleware and change it to 1 request per 60 seconds. Restart the backend and verify the strictness.
+4. **Query Audit Logs:** Open Prisma Studio (`npx prisma studio`). Go to the `AuditLog` table. Log in with the wrong password a few times. Do you see the `LOGIN_FAILED` events appearing? What metadata is captured?
+5. **Trigger Account Lockout:** Try logging in with the correct email but wrong password 5 times. Does the account get locked? Open Prisma Studio and verify `lockedUntil` is set on the User row. Try again after 15 minutes.
+

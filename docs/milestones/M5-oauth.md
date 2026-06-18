@@ -158,8 +158,60 @@ Finally, the controller sets the cookies and redirects the user back to the Next
 
 ---
 
+## Step 5: PKCE — The Extra Layer for Public Clients
+
+**PKCE (Proof Key for Code Exchange)** is an extension to the Authorization Code flow required for public clients such as mobile apps and single-page applications (SPAs) that cannot safely store a `client_secret`.
+
+The problem: if someone intercepts the `code` from Google's redirect, they could exchange it for tokens. PKCE eliminates this risk even if the code is intercepted.
+
+### How it works
+
+**Step 1: Frontend generates a Code Verifier & Challenge before redirecting.**
+```typescript
+// The Code Verifier is a random high-entropy string — never sent to Google
+const codeVerifier = crypto.randomBytes(32).toString("base64url");
+
+// The Code Challenge is a SHA-256 hash of the verifier — sent to Google
+const codeChallenge = crypto
+  .createHash("sha256")
+  .update(codeVerifier)
+  .digest("base64url");
+
+// Store the verifier in session/cookie so the callback can use it
+res.cookie("pkce_verifier", codeVerifier, { httpOnly: true, maxAge: 600_000 });
+```
+
+**Step 2: Attach the challenge to the Google URL.**
+```typescript
+googleAuthUrl.searchParams.append("code_challenge", codeChallenge);
+googleAuthUrl.searchParams.append("code_challenge_method", "S256");
+```
+
+**Step 3: In the callback, include the verifier in the token exchange.**
+```typescript
+const codeVerifier = req.cookies.pkce_verifier;
+res.clearCookie("pkce_verifier");
+
+const tokenResponse = await axios.post("https://oauth2.googleapis.com/token", {
+  client_id: process.env.GOOGLE_CLIENT_ID,
+  client_secret: process.env.GOOGLE_CLIENT_SECRET,
+  code,
+  redirect_uri: "http://localhost:5000/api/oauth/google/callback",
+  grant_type: "authorization_code",
+  code_verifier: codeVerifier, // 👈 Google verifies hash matches
+});
+```
+
+Google computes `SHA-256(codeVerifier)` and compares it to the `codeChallenge` sent in Step 1. If an attacker intercepted the `code`, they cannot exchange it without the `codeVerifier`, which was never transmitted to Google.
+
+> **Note:** For web apps with a confidential backend (like ours), PKCE is optional since the `client_secret` is already kept private on the server. For mobile apps and SPAs, PKCE is **mandatory**.
+
+---
+
 ## Practice Exercises
 
 1. **State Validation Check:** Comment out the `state !== storedState` check in your callback endpoint. Notice how the flow still works. Now, manually change the `state` in the URL Google redirects you to. Why is it dangerous to accept this request without validation?
 2. **Account Merging:** Sign up normally with `your.email@gmail.com` and a password. Then log out, and use "Sign in with Google" with the exact same email. Notice how the backend logs you into the exact same account instead of throwing an error.
 3. **Null Password Security:** Try to log in via the normal email/password form using the email of an account that *only* ever used Google login. Does the backend crash? Check M1 to see why `if (!user || !user.passwordHash)` protects us.
+4. **Implement PKCE:** Add the PKCE code verifier/challenge flow to the existing Google OAuth. Verify that the token exchange still works after adding `code_verifier` to the request body.
+

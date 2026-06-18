@@ -259,6 +259,65 @@ export function getAccessTokenCookieOptions(isProduction: boolean): CookieOption
 
 ---
 
+## 8. JWT Secret Rotation (Production Must-Know)
+
+Over time, you must rotate your `ACCESS_TOKEN_SECRET` to limit the blast radius of a compromised secret. But naively changing the secret immediately invalidates all active access tokens and logs out every user at once.
+
+### The Problem
+```
+Old Secret: "abc123"
+New Secret: "xyz789"
+
+If you swap instantly:
+→ All tokens signed with "abc123" are now invalid
+→ Every user gets a 401 on their next request
+→ They hit the /refresh endpoint
+→ Their refresh token is valid → new access token is issued with new secret ✅
+→ But there is a 5-minute window where every request fails!
+```
+
+For a 5-minute access token window, this is acceptable. But for longer tokens or zero-downtime requirements, we need **dual-secret verification**.
+
+### Dual-Secret Rotation
+During the rotation window, we accept tokens signed with EITHER the old or new secret:
+
+```typescript
+// apps/api/src/utils/jwt.ts
+
+export function verifyAccessToken(token: string) {
+  const secrets = [
+    process.env.ACCESS_TOKEN_SECRET,       // Current secret
+    process.env.ACCESS_TOKEN_SECRET_OLD,   // Previous secret (set during rotation)
+  ].filter(Boolean); // Remove undefined/empty
+
+  for (const secret of secrets) {
+    try {
+      return jwt.verify(token, secret!) as JwtPayload;
+    } catch (err) {
+      // If this secret fails, try the next one
+      if (!(err instanceof jwt.JsonWebTokenError)) throw err;
+    }
+  }
+
+  throw new jwt.JsonWebTokenError("Invalid token");
+}
+```
+
+### The Rotation Procedure (Zero Downtime)
+```
+Step 1: Move ACCESS_TOKEN_SECRET → ACCESS_TOKEN_SECRET_OLD
+Step 2: Generate new secret → ACCESS_TOKEN_SECRET
+Step 3: Deploy the new config (your app now accepts BOTH)
+Step 4: Wait 5 minutes (all old tokens expire naturally)
+Step 5: Remove ACCESS_TOKEN_SECRET_OLD from config
+Step 6: Deploy again (only new secret is accepted)
+```
+
+> [!IMPORTANT]
+> The Refresh Token is NOT a JWT — it is a random string stored in your database. Rotating the JWT secret has no impact on refresh tokens. Users will only need to re-login once their current 5-minute access token expires and the refresh flow issues a new one.
+
+---
+
 ## Practice Exercises
 
 1. **Decode a JWT manually.** After logging in, find the `access_token` cookie value in DevTools → Application → Cookies. Copy the payload section (middle part) and paste it at [jwt.io](https://jwt.io). What user data do you see?
@@ -268,3 +327,6 @@ export function getAccessTokenCookieOptions(isProduction: boolean): CookieOption
 3. **Experiment with expiry.** Change `ACCESS_TOKEN_EXPIRY` in `.env` to `"10s"`. Log in, wait 15 seconds, then try hitting a protected endpoint. What error code do you get back?
 
 4. **Understand the cookie flags.** In DevTools → Application → Cookies, look at the flags on your `access_token` cookie. Confirm `HttpOnly` and `SameSite` are set. Try running `document.cookie` in the console — is the access token visible?
+
+5. **Implement dual-secret rotation.** Update your `verifyAccessToken` function to accept both `ACCESS_TOKEN_SECRET` and `ACCESS_TOKEN_SECRET_OLD`. Verify it works by setting both env vars to different values and testing with tokens signed by each.
+
