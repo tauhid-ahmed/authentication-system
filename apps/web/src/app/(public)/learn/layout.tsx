@@ -1,21 +1,8 @@
 import fs from "fs";
 import path from "path";
 import Link from "next/link";
-import { BookOpen, CheckCircle, Circle } from "lucide-react";
-
-// All milestone definitions — title, slug, level, and description
-const MILESTONES = [
-  { slug: "M0-foundations",       title: "M0: Foundations",           level: "Beginner",      desc: "AuthN vs AuthZ, HTTP statelessness, session vs token architecture." },
-  { slug: "M1-mvp-auth",          title: "M1: MVP Auth",              level: "Beginner",      desc: "Build the login, signup, and /me endpoints from scratch." },
-  { slug: "M2-advanced-tokens",   title: "M2: Advanced Tokens",       level: "Intermediate",  desc: "Access tokens, refresh tokens, and rotation with replay attack prevention." },
-  { slug: "M3-authorization",     title: "M3: Authorization (RBAC)",  level: "Intermediate",  desc: "Role-based access control: USER, ADMIN, SUPER_ADMIN." },
-  { slug: "M4-nextjs-integration",title: "M4: Next.js Integration",   level: "Intermediate",  desc: "Server Components, Client Components, and the auto-refresh interceptor." },
-  { slug: "M5-oauth",             title: "M5: OAuth 2.0 (Google)",    level: "Intermediate",  desc: "Authorization Code + PKCE flow for Google login." },
-  { slug: "M6-advanced-security", title: "M6: Advanced Security",     level: "Advanced",      desc: "Rate limiting, CSRF, security headers, and anomaly detection." },
-  { slug: "M7-session-management",title: "M7: Session Management",    level: "Advanced",      desc: "Multi-device sessions, device tracking, and remote revocation." },
-  { slug: "M8-password-reset",    title: "M8: Password Reset",        level: "Advanced",      desc: "Secure email-based password reset with time-limited tokens." },
-  { slug: "M9-mfa",               title: "M9: Multi-Factor Auth",     level: "Expert",        desc: "TOTP-based 2FA with QR code provisioning and backup codes." },
-];
+import { BookOpen, Circle } from "lucide-react";
+import { TRACKS } from "@/lib/curriculum";
 
 const LEVEL_COLORS: Record<string, string> = {
   Beginner:     "text-emerald-400 bg-emerald-400/10",
@@ -25,7 +12,6 @@ const LEVEL_COLORS: Record<string, string> = {
 };
 
 export default function LearnLayout({ children }: { children: React.ReactNode }) {
-  // Check which milestones have files
   const docsDir = path.join(process.cwd(), "../../docs/milestones");
   let existingFiles = new Set<string>();
   try {
@@ -35,12 +21,11 @@ export default function LearnLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Top Nav */}
       <header className="sticky top-0 z-50 border-b bg-card/80 backdrop-blur-sm">
         <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 font-bold text-xl tracking-tight">
             <BookOpen className="w-5 h-5 text-primary" />
-            Auth<span className="text-primary">Mastery</span>
+            Execution <span className="text-primary">Mastery</span>
           </Link>
           <nav className="flex items-center gap-4 text-sm">
             <Link href="/learn" className="text-muted-foreground hover:text-foreground transition-colors">Curriculum</Link>
@@ -52,45 +37,46 @@ export default function LearnLayout({ children }: { children: React.ReactNode })
         </div>
       </header>
 
-      <div className="flex flex-1 max-w-screen-2xl mx-auto w-full">
-        {/* Sidebar */}
-        <aside className="w-72 flex-shrink-0 border-r bg-card/30 sticky top-16 h-[calc(100vh-4rem)] overflow-y-auto">
-          <div className="p-4">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 px-2">
-              Learning Path — Zero to Staff Engineer
-            </p>
-            <nav className="space-y-1">
-              {MILESTONES.map((m, i) => {
-                const exists = existingFiles.has(m.slug);
-                const levelColor = LEVEL_COLORS[m.level];
-                return (
-                  <Link
-                    key={m.slug}
-                    href={exists ? `/learn/${m.slug}` : "#"}
-                    className={`group flex items-start gap-3 px-3 py-2.5 rounded-lg transition-all text-sm ${
-                      exists
-                        ? "hover:bg-muted/60 cursor-pointer"
-                        : "opacity-40 cursor-not-allowed"
-                    }`}
-                  >
-                    <span className="mt-0.5 flex-shrink-0 text-muted-foreground group-hover:text-primary transition-colors">
-                      {exists ? <Circle className="w-4 h-4" /> : <Circle className="w-4 h-4" />}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-foreground truncate">{m.title}</p>
-                      <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded mt-0.5 ${levelColor}`}>
-                        {m.level}
-                      </span>
-                    </div>
-                  </Link>
-                );
-              })}
-            </nav>
+      <div className="flex flex-1 max-w-screen-2xl mx-auto w-full overflow-hidden">
+        <aside className="w-72 flex-shrink-0 border-r bg-card/30 h-[calc(100vh-4rem)] overflow-y-auto custom-scrollbar">
+          <div className="p-4 space-y-6">
+            {TRACKS.map((track) => (
+              <div key={track.id}>
+                <div className="flex items-center gap-2 mb-3 px-2 text-muted-foreground">
+                  <track.icon className="w-4 h-4" />
+                  <h3 className="text-xs font-bold uppercase tracking-wider">{track.title}</h3>
+                </div>
+                <nav className="space-y-0.5">
+                  {track.milestones.map((m) => {
+                    const exists = existingFiles.has(m.slug);
+                    const levelColor = LEVEL_COLORS[m.level];
+                    return (
+                      <Link
+                        key={m.slug}
+                        href={exists ? `/learn/${m.slug}` : "#"}
+                        className={`group flex items-start gap-3 px-3 py-2 rounded-lg transition-all text-sm ${
+                          exists ? "hover:bg-muted/60 cursor-pointer" : "opacity-40 cursor-not-allowed"
+                        }`}
+                      >
+                        <span className="mt-1 flex-shrink-0 text-muted-foreground group-hover:text-primary transition-colors">
+                          <Circle className="w-3.5 h-3.5" />
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-foreground leading-tight">{m.title}</p>
+                          <span className={`inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded mt-1 ${levelColor}`}>
+                            {m.level}
+                          </span>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </nav>
+              </div>
+            ))}
           </div>
         </aside>
 
-        {/* Main Content Area */}
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 h-[calc(100vh-4rem)] overflow-y-auto custom-scrollbar">
           {children}
         </main>
       </div>

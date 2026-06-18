@@ -4,20 +4,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import MarkdownRenderer from "@/components/markdown-renderer";
 import { ArrowLeft, ArrowRight, BookOpen, Terminal, Lightbulb } from "lucide-react";
-
-// Navigation order for prev/next
-const MILESTONE_ORDER = [
-  "M0-foundations",
-  "M1-mvp-auth",
-  "M2-advanced-tokens",
-  "M3-authorization",
-  "M4-nextjs-integration",
-  "M5-oauth",
-  "M6-advanced-security",
-  "M7-session-management",
-  "M8-password-reset",
-  "M9-mfa",
-];
+import { FLAT_MILESTONES } from "@/lib/curriculum";
 
 const EXERCISES: Record<string, { task: string; hint: string }[]> = {
   "M0-foundations": [
@@ -51,9 +38,9 @@ export default async function MilestonePage({ params }: MilestonePageProps) {
     notFound();
   }
 
-  const currentIdx = MILESTONE_ORDER.indexOf(milestone);
-  const prevSlug = currentIdx > 0 ? MILESTONE_ORDER[currentIdx - 1] : null;
-  const nextSlug = currentIdx < MILESTONE_ORDER.length - 1 ? MILESTONE_ORDER[currentIdx + 1] : null;
+  const currentIdx = FLAT_MILESTONES.indexOf(milestone);
+  const prevSlug = currentIdx > 0 ? FLAT_MILESTONES[currentIdx - 1] : null;
+  const nextSlug = currentIdx < FLAT_MILESTONES.length - 1 ? FLAT_MILESTONES[currentIdx + 1] : null;
   const exercises = EXERCISES[milestone] || [];
 
   const prevTitle = prevSlug ? prevSlug.replace(/-/g, " ").replace(/\b\w/g, l => l.toUpperCase()) : null;

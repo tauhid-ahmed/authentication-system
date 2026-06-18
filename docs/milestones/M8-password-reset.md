@@ -1,111 +1,160 @@
-# M8: Password Reset & Email Verification
+# M8: Password Reset (Implementation Guide)
 
-When users forget their passwords or sign up with a new email, we need a secure way to verify that they actually own the email address they claim to own.
-
-This milestone covers the architecture of one-time-use secure tokens sent via email.
+**Track:** Core Curriculum  
+**Prerequisites:** M1 (MVP Auth)  
+**Time:** ~2 hours  
 
 ---
 
-## 1. The Verification Token Model
+## The Goal
+In this module, we implement a highly secure "Forgot Password" flow. This involves:
+1. Receiving an email address.
+2. Generating a time-limited, cryptographically secure token.
+3. Sending an email with a reset link.
+4. Verifying the token and setting a new password.
+5. Revoking all active sessions (logging the user out everywhere) for security.
 
-We cannot just send a link like `/reset-password?email=alice@gmail.com`. An attacker could click that link and reset anyone's password. 
+---
 
-We must send a cryptographically secure, random, expiring token.
+## Step 1: The Database Schema
 
-### Database Schema
-First, we add a generic Token table to our database:
+We cannot just store a "reset code" on the `User` model. We need a dedicated table to handle expiration times and token revocation. Open `packages/database/prisma/schema.prisma`.
 
 ```prisma
-model VerificationToken {
+model PasswordResetToken {
   id        String   @id @default(cuid())
-  email     String
-  token     String   @unique
-  type      TokenType // "EMAIL_VERIFICATION" | "PASSWORD_RESET"
-  expiresAt DateTime
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // We store a HASH of the token, just like passwords and refresh tokens
+  tokenHash String   @unique
+  
+  expiresAt DateTime // Usually 15 to 60 minutes
+  usedAt    DateTime? // Null until the token is successfully used
   createdAt DateTime @default(now())
-
-  @@unique([email, type]) // Only one active token per type per email
 }
 ```
 
 ---
 
-## 2. The Password Reset Flow
+## Step 2: The "Forgot Password" Endpoint
 
-### Step 1: User requests a reset
-1. User goes to `/forgot-password` and enters `alice@email.com`.
-2. Backend generates a strong random token (e.g., using Node's `crypto.randomBytes`).
-3. Backend saves it to `VerificationToken` with a 1-hour expiration.
-4. Backend sends an email: *"Click here to reset: `https://app.com/reset-password?token=XYZ`"*
+When a user clicks "Forgot Password" and submits their email, they hit the `POST /api/auth/forgot-password` endpoint.
 
-*Security Note: If `alice@email.com` does NOT exist in our DB, we still say "If an account exists, an email has been sent." This prevents attackers from using this form to guess which emails are registered.*
-
-### Step 2: User clicks the link
-1. User arrives at our Next.js frontend page `/reset-password?token=XYZ`.
-2. They type a new password and submit the form.
-
-### Step 3: Backend Verification
-When the backend receives the `POST /api/auth/reset-password` request:
-
+### 2.1 The Enumeration Defense
 ```typescript
-// 1. Find the token
-const verificationToken = await prisma.verificationToken.findUnique({
-  where: { token: providedToken }
-});
+// apps/api/src/modules/auth/auth.service.ts -> forgotPassword
 
-// 2. Validate token
-if (!verificationToken) throw new Error("Invalid token");
-if (verificationToken.expiresAt < new Date()) throw new Error("Token expired");
+const user = await db.user.findUnique({ where: { email } });
 
-// 3. Find the user attached to that email
-const user = await prisma.user.findUnique({ where: { email: verificationToken.email } });
-
-// 4. Update the password
-const newHash = await hashPassword(newPassword);
-await prisma.user.update({
-  where: { id: user.id },
-  data: { passwordHash: newHash }
-});
-
-// 5. Delete the token (One-time use only!)
-await prisma.verificationToken.delete({ where: { id: verificationToken.id } });
-
-// 6. Security Measure: Revoke all existing sessions
-// If the password was reset, the account might have been compromised. Kick out all other devices.
-await revokeAllUserSessions(user.id);
-```
-
----
-
-## 3. Email Verification Flow
-
-The Email Verification flow is nearly identical to Password Reset, but triggered during Signup rather than manually.
-
-1. User signs up. Account is created with `emailVerified: false`.
-2. Generate token, send email.
-3. User clicks link: `/verify-email?token=XYZ`.
-4. Backend finds token, updates user to `emailVerified: true`, deletes token.
-
-### Gatekeeping Unverified Users
-Depending on your application, you might want to prevent unverified users from doing certain actions.
-
-We can enforce this in our middleware or service layer:
-```typescript
-if (!user.emailVerified) {
-  throw new Error("EMAIL_NOT_VERIFIED");
+// CRITICAL SECURITY RULE:
+// If the user doesn't exist, we STILL RETURN SUCCESS.
+// We just don't send an email. 
+// If we returned an error ("Email not found"), attackers could type 
+// thousands of emails into the form to figure out who uses your site.
+if (!user) {
+  return; // Pretend it worked!
 }
 ```
-In the frontend, if the API returns this error, the Next.js layout can display a persistent banner: *"Please verify your email address to unlock all features."*
+
+### 2.2 Generating the Token
+```typescript
+import crypto from "crypto";
+import bcrypt from "bcrypt";
+
+// 1. Generate a raw random string (This is what we email to the user)
+const resetToken = crypto.randomBytes(32).toString("hex");
+
+// 2. Hash the token (This is what we store in the DB)
+const tokenHash = await bcrypt.hash(resetToken, 10);
+
+// 3. Save to database with a 15-minute expiration
+await db.passwordResetToken.create({
+  data: {
+    userId: user.id,
+    tokenHash: tokenHash,
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 mins
+  }
+});
+```
+
+### 2.3 Sending the Email
+```typescript
+// Construct the URL that the user will click
+const resetUrl = `https://yourdomain.com/reset-password?token=${resetToken}`;
+
+// Send the email (using SendGrid, AWS SES, Resend, etc.)
+await emailService.sendPasswordResetEmail(user.email, resetUrl);
+```
 
 ---
 
-## 4. Why not use JWTs for email links?
+## Step 3: The "Reset Password" Endpoint
 
-You *could* encode the user's email into a JWT and email them a link like `?token=eyJ...`. This avoids the need for the `VerificationToken` database table.
+The user receives the email, clicks the link, and lands on your frontend. They type a new password and submit. The frontend sends `POST /api/auth/reset-password` with `{ token, newPassword }`.
 
-However, **database tokens are preferred over JWTs for email links.**
-Why? Because JWTs cannot be easily revoked. If a user clicks "Reset Password" twice by accident, two valid JWTs are generated. If you use a database, the `@@unique([email, type])` constraint ensures the first token is deleted when the second is created.
+### 3.1 Validate the Token
+```typescript
+// apps/api/src/modules/auth/auth.service.ts -> resetPassword
 
-Additionally, when the password reset is completed, we delete the database token so the link becomes instantly dead. You cannot kill a stateless JWT before its expiry.
+// 1. Find ALL active, unused tokens
+const activeTokens = await db.passwordResetToken.findMany({
+  where: { 
+    usedAt: null, 
+    expiresAt: { gt: new Date() } // Must not be expired
+  },
+  include: { user: true }
+});
 
-Proceed to **M9: Two-Factor Authentication (MFA)** to learn the ultimate defense against compromised passwords.
+// 2. Compare the raw token against the hashes
+let matchedToken = null;
+for (const t of activeTokens) {
+  const isValid = await bcrypt.compare(rawToken, t.tokenHash);
+  if (isValid) {
+    matchedToken = t;
+    break;
+  }
+}
+
+if (!matchedToken) {
+  throw new AppError("INVALID_OR_EXPIRED_TOKEN", 400);
+}
+```
+
+### 3.2 Update Password & Mark Token Used
+```typescript
+// Hash the NEW password
+const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+// Update the user's password in the DB
+await db.user.update({
+  where: { id: matchedToken.userId },
+  data: { passwordHash: newPasswordHash }
+});
+
+// Mark the token as used so it can never be used again
+await db.passwordResetToken.update({
+  where: { id: matchedToken.id },
+  data: { usedAt: new Date() }
+});
+```
+
+### 3.3 The Final Security Step: Revoke All Sessions
+If someone forgot their password, there is a chance their account was compromised. When a password is changed, **you must immediately log the user out of all devices.**
+
+```typescript
+// Revoke all refresh tokens (sessions) for this user
+await db.session.updateMany({
+  where: { userId: matchedToken.userId, isRevoked: false },
+  data: { isRevoked: true }
+});
+```
+The user will now have to log back in with their newly created password.
+
+---
+
+## Practice Exercises
+
+1. **Token Lifetime:** Where in the code is the 15-minute expiration set? Change it to 1 minute, request a reset email, wait 2 minutes, and try to use it. What happens?
+2. **Prevent Re-use:** Try submitting the same valid reset token twice. Why does the second attempt fail? Follow the logic in the validation step.
+3. **Session Revocation Validation:** Log in on your browser. Then, use an API testing tool (like Postman) to hit the `/forgot-password` and `/reset-password` endpoints. After successfully resetting, refresh your browser dashboard. Are you logged out?
