@@ -49,6 +49,39 @@ const EXERCISES: Record<string, { task: string; hint: string }[]> = {
   ],
 };
 
+const AUTH_APPROACHES = [
+  {
+    title: "Approach 1 (Tutorial)",
+    badge: "Beginner",
+    access: "Access JWT",
+    refresh: "Refresh JWT",
+    backend: "No DB lookup",
+    learningCurve: "Easy to understand, but limited revocation control",
+    bestFor: "Learning, prototypes, small demos",
+    note: "This is the tutorial mental model: both tokens are JWTs, and the server does not track refresh state yet.",
+  },
+  {
+    title: "Approach 2 (Real-world bridge)",
+    badge: "Intermediate",
+    access: "Access JWT",
+    refresh: "Refresh JWT + JTI",
+    backend: "Store JTI in DB",
+    learningCurve: "Slightly harder, but adds revocation and rotation control",
+    bestFor: "Production apps that need logout and reuse detection",
+    note: "This is the step up from tutorial auth.",
+  },
+  {
+    title: "Approach 3 (Most common today)",
+    badge: "Production",
+    access: "Access JWT",
+    refresh: "Random refresh string",
+    backend: "Store hash in DB",
+    learningCurve: "Hardest to learn, but strongest control and security",
+    bestFor: "Real apps, multi-device sessions, logout everywhere",
+    note: "This is the pattern most production systems use.",
+  },
+];
+
 interface MilestonePageProps {
   params: Promise<{ milestone: string }>;
 }
@@ -110,6 +143,85 @@ export default async function MilestonePage({ params }: MilestonePageProps) {
           </span>
         </div>
       </div>
+
+      {/* Auth Approaches Section */}
+      <section className="mb-10 rounded-2xl border border-border/60 bg-card p-5 sm:p-6">
+        <div className="mb-5">
+          <p className="text-xs uppercase tracking-[0.2em] text-primary/80">
+            Compare the flow
+          </p>
+          <h2 className="mt-1 text-xl font-semibold">JWT Approaches</h2>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          {AUTH_APPROACHES.map((item) => (
+            <div
+              key={item.title}
+              className="rounded-xl border border-border/70 bg-background p-4"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="font-semibold">{item.title}</h3>
+                <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+                  {item.badge}
+                </span>
+              </div>
+              <div className="mt-3 space-y-2 text-sm">
+                <p>
+                  <span className="font-medium text-foreground">Access:</span>{" "}
+                  <span className="text-muted-foreground">{item.access}</span>
+                </p>
+                <p>
+                  <span className="font-medium text-foreground">Refresh:</span>{" "}
+                  <span className="text-muted-foreground">{item.refresh}</span>
+                </p>
+                <p>
+                  <span className="font-medium text-foreground">Backend:</span>{" "}
+                  <span className="text-muted-foreground">{item.backend}</span>
+                </p>
+                <p>
+                  <span className="font-medium text-foreground">
+                    Learning curve:
+                  </span>{" "}
+                  <span className="text-muted-foreground">
+                    {item.learningCurve}
+                  </span>
+                </p>
+                <p>
+                  <span className="font-medium text-foreground">Best for:</span>{" "}
+                  <span className="text-muted-foreground">{item.bestFor}</span>
+                </p>
+                <p className="rounded-md bg-muted/40 p-2 text-xs text-muted-foreground">
+                  {item.note}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-5 rounded-lg border border-dashed border-primary/20 bg-primary/5 p-4">
+          <p className="text-sm font-medium text-foreground">
+            Real-world use cases
+          </p>
+          <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+            <li>
+              • Use Approach 1 when you are learning the token lifecycle for the
+              first time.
+            </li>
+            <li>
+              • Use Approach 2 when you need logout, rotation, and reuse
+              detection in production.
+            </li>
+            <li>
+              • Use Approach 3 when you want the most common production setup:
+              opaque refresh tokens stored securely in the database.
+            </li>
+            <li>
+              • Use the DB-backed session model when the app must control access
+              very strictly.
+            </li>
+          </ul>
+        </div>
+      </section>
 
       {/* Main Markdown Content */}
       <article>

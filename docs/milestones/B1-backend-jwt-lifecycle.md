@@ -2,7 +2,7 @@
 
 **Track:** Backend Deep Dive  
 **Prerequisites:** M0 (Foundations), M1 (MVP Auth)  
-**Time:** ~3 hours  
+**Time:** ~3 hours
 
 ---
 
@@ -13,6 +13,7 @@
 ## What You Will Learn
 
 By the end of this document you will be able to:
+
 - Explain exactly what a JWT is at the byte level
 - Describe what happens inside the server when a token is signed and when it is verified
 - Compare the three common access/refresh token architectures
@@ -98,16 +99,17 @@ export function signAccessToken(userId: string, role: string): string {
     // Secret — must be kept private, minimum 32 chars
     env.ACCESS_TOKEN_SECRET,
     {
-      expiresIn: "5m",   // Token expires in 5 minutes
+      expiresIn: "5m", // Token expires in 5 minutes
       // Optional but recommended for production:
       // issuer: "https://api.yourdomain.com",
       // audience: "https://yourdomain.com",
-    }
+    },
   );
 }
 ```
 
 **What `jwt.sign` does internally:**
+
 1. Creates the header: `{ alg: "HS256", typ: "JWT" }`
 2. Creates the payload with your data + `iat` (current time) + `exp` (current time + 5 minutes)
 3. Base64Url encodes header and payload
@@ -129,7 +131,7 @@ import { env } from "../config/env.js";
 export function authenticate(req, res, next) {
   // 1. Extract the token from the HttpOnly cookie
   const token = req.cookies.access_token;
-  
+
   if (!token) {
     return res.status(401).json({ error: { code: "NO_TOKEN" } });
   }
@@ -137,10 +139,10 @@ export function authenticate(req, res, next) {
   try {
     // 2. Verify the signature AND check expiration
     const payload = jwt.verify(token, env.ACCESS_TOKEN_SECRET) as JwtPayload;
-    
+
     // 3. Attach user data to the request object
     req.user = { id: payload.userId, role: payload.role };
-    
+
     // 4. Continue to the actual route handler
     next();
   } catch (error) {
@@ -156,6 +158,7 @@ export function authenticate(req, res, next) {
 ```
 
 **What `jwt.verify` does internally:**
+
 1. Splits the token into header, payload, signature
 2. Recomputes `HMAC-SHA256(header.payload, secret)`
 3. Compares computed signature to the signature in the token
@@ -170,6 +173,7 @@ The key insight: **no database query**. This is why JWTs scale.
 ## 4. Why 5 Minutes? The Security-UX Tradeoff
 
 Access tokens cannot be revoked (unlike database sessions). If someone steals an access token:
+
 - **30-day token:** attacker has 30 days of access. Catastrophic.
 - **1-hour token:** attacker has 1 hour. Bad.
 - **5-minute token:** attacker has 5 minutes. Manageable.
@@ -188,12 +192,20 @@ There are three common approaches.
 
 ### Approach 1: Tutorial JWT Pair
 
-This is the simple version you see in many tutorials.
+This is the simple version you see in many tutorials. It is the right place to
+start because it teaches the core idea without adding database complexity.
 
-| Token | Shape | Backend state |
-| --- | --- | --- |
-| Access token | JWT | None |
-| Refresh token | JWT | None |
+Think of it like this:
+
+- The browser gets an **access JWT** for short-lived requests.
+- The browser also gets a **refresh JWT** for getting a new access token.
+- The backend does **not** store refresh-token state yet.
+- Logout is mostly "delete the tokens on the client" instead of "revoke a server-side session".
+
+| Token         | Shape | Backend state |
+| ------------- | ----- | ------------- |
+| Access token  | JWT   | None          |
+| Refresh token | JWT   | None          |
 
 Flow:
 
@@ -205,11 +217,13 @@ Logout -> client deletes tokens
 ```
 
 Why tutorials use it:
+
 - It is easy to explain.
 - It needs no database table.
 - It feels fully "stateless".
 
 The problem:
+
 - You cannot revoke a refresh token before it expires.
 - Logout is mostly client-side.
 - If a refresh JWT is stolen, the attacker can keep refreshing until expiry.
@@ -224,9 +238,9 @@ token's `jti`.
 
 `jti` means JWT ID. It is a unique identifier inside the token payload.
 
-| Token | Shape | Backend state |
-| --- | --- | --- |
-| Access token | JWT | None |
+| Token         | Shape          | Backend state     |
+| ------------- | -------------- | ----------------- |
+| Access token  | JWT            | None              |
 | Refresh token | JWT with `jti` | Store `jti` in DB |
 
 Example refresh JWT payload:
@@ -251,11 +265,13 @@ Refresh flow:
 ```
 
 What this improves:
+
 - Logout can revoke the stored `jti`.
 - Rotation can mark old refresh tokens as used.
 - Reuse detection becomes possible.
 
 Tradeoffs:
+
 - You still expose session metadata inside the refresh JWT payload.
 - You must check the DB anyway, so the refresh token is no longer truly stateless.
 - If you store raw `jti` values, DB leaks may expose useful token identifiers.
@@ -266,9 +282,9 @@ This is a valid production pattern when implemented carefully.
 
 This is the approach used by this codebase.
 
-| Token | Shape | Backend state |
-| --- | --- | --- |
-| Access token | JWT | None |
+| Token         | Shape                                        | Backend state                    |
+| ------------- | -------------------------------------------- | -------------------------------- |
+| Access token  | JWT                                          | None                             |
 | Refresh token | Opaque/random token or minimal refresh token | Store hashed token/session in DB |
 
 Flow:
@@ -280,6 +296,7 @@ Logout -> revoke DB session
 ```
 
 Why this codebase uses it:
+
 - The access token stays fast and stateless.
 - The refresh token is fully revocable.
 - The database is the source of truth for sessions and devices.
@@ -302,12 +319,14 @@ Refresh token = long-lived session credential controlled by the database
 ## 6. HS256 vs RS256: Symmetric vs Asymmetric
 
 ### HS256 (What we use)
+
 - Uses a **single shared secret** to both sign AND verify
 - **Use when:** The same service that signs tokens also verifies them (monolith or single API)
 - **Risk:** If the secret leaks, anyone can forge tokens
 - **Our codebase:** `ACCESS_TOKEN_SECRET` in `.env`
 
 ### RS256 (What large companies use)
+
 - Uses a **private key** to sign and a **public key** to verify
 - **Use when:** Multiple microservices need to verify tokens (they only need the public key)
 - **Advantage:** A microservice can verify tokens without ever having access to the signing key
@@ -315,7 +334,9 @@ Refresh token = long-lived session credential controlled by the database
 
 ```typescript
 // RS256 example (for reference — not in this codebase)
-const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 4096 });
+const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+  modulusLength: 4096,
+});
 
 // API Gateway signs with private key
 const token = jwt.sign(payload, privateKey, { algorithm: "RS256" });
@@ -329,21 +350,25 @@ const decoded = jwt.verify(token, publicKey, { algorithms: ["RS256"] });
 ## 7. Common JWT Attacks and Our Defenses
 
 ### 7.1 The "alg: none" Attack
+
 An attacker crafts a token with `"alg": "none"` in the header. Vulnerable servers would skip signature verification.
 
 **Our defense:** `jsonwebtoken` library always requires a valid algorithm. We never accept unsigned tokens.
 
 ### 7.2 XSS (Cross-Site Scripting) Token Theft
+
 An attacker injects malicious JavaScript into your site. The script reads the token from `localStorage` and sends it to the attacker.
 
 **Our defense:** We store tokens in `HttpOnly` cookies. JavaScript cannot read `HttpOnly` cookies. The browser sends them automatically on every request.
 
 ### 7.3 CSRF (Cross-Site Request Forgery)
+
 An attacker tricks the browser into making a request to your API. Since the browser automatically sends cookies, the API might process the forged request.
 
 **Our defense:** We set `sameSite: "lax"` on cookies. This prevents the browser from sending cookies on cross-origin requests initiated by third-party sites (e.g., clicking a malicious link). For POST/PUT/DELETE requests, `sameSite: "strict"` or CSRF tokens provide additional protection.
 
 ### 7.4 Weak Secrets
+
 If your `ACCESS_TOKEN_SECRET` is short or guessable, an attacker can brute-force it.
 
 **Our defense:** We validate minimum length (32 chars) at startup. In production, use 64+ random bytes generated by `crypto.randomBytes(64).toString('hex')`.
@@ -355,26 +380,28 @@ If your `ACCESS_TOKEN_SECRET` is short or guessable, an attacker can brute-force
 ```typescript
 // apps/api/src/utils/jwt.ts
 
-export function getAccessTokenCookieOptions(isProduction: boolean): CookieOptions {
+export function getAccessTokenCookieOptions(
+  isProduction: boolean,
+): CookieOptions {
   return {
     // HttpOnly: JavaScript cannot read this cookie.
     // This is the #1 most important security setting.
     httpOnly: true,
-    
+
     // Secure: Cookie is ONLY sent over HTTPS.
     // In development we use HTTP, so we disable this.
     secure: isProduction,
-    
+
     // SameSite: Controls when the browser sends the cookie.
     // "lax" = sends on same-site requests + top-level navigation
     // "strict" = never sends on cross-site requests (breaks OAuth)
     // "none" = always sends (requires Secure: true)
     sameSite: "lax",
-    
+
     // MaxAge: How long the cookie lives in the browser (in milliseconds).
     // For access tokens: 5 minutes. Browser auto-deletes after this.
     maxAge: 5 * 60 * 1000,
-    
+
     // Path: Which URL paths can access this cookie.
     // "/" means all paths on your domain.
     path: "/",
@@ -389,6 +416,7 @@ export function getAccessTokenCookieOptions(isProduction: boolean): CookieOption
 Over time, you must rotate your `ACCESS_TOKEN_SECRET` to limit the blast radius of a compromised secret. But naively changing the secret immediately invalidates all active access tokens and logs out every user at once.
 
 ### The Problem
+
 ```
 Old Secret: "abc123"
 New Secret: "xyz789"
@@ -404,6 +432,7 @@ If you swap instantly:
 For a 5-minute access token window, this is acceptable. But for longer tokens or zero-downtime requirements, we need **dual-secret verification**.
 
 ### Dual-Secret Rotation
+
 During the rotation window, we accept tokens signed with EITHER the old or new secret:
 
 ```typescript
@@ -411,8 +440,8 @@ During the rotation window, we accept tokens signed with EITHER the old or new s
 
 export function verifyAccessToken(token: string) {
   const secrets = [
-    process.env.ACCESS_TOKEN_SECRET,       // Current secret
-    process.env.ACCESS_TOKEN_SECRET_OLD,   // Previous secret (set during rotation)
+    process.env.ACCESS_TOKEN_SECRET, // Current secret
+    process.env.ACCESS_TOKEN_SECRET_OLD, // Previous secret (set during rotation)
   ].filter(Boolean); // Remove undefined/empty
 
   for (const secret of secrets) {
@@ -429,6 +458,7 @@ export function verifyAccessToken(token: string) {
 ```
 
 ### The Rotation Procedure (Zero Downtime)
+
 ```
 Step 1: Move ACCESS_TOKEN_SECRET → ACCESS_TOKEN_SECRET_OLD
 Step 2: Generate new secret → ACCESS_TOKEN_SECRET
