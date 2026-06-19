@@ -1,0 +1,12 @@
+{
+  "name": "@exercise-03/api",
+  "version": "1.0.0",
+  "description": "Starter API for jwt-auth",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

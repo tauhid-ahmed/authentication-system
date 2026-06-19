@@ -1,0 +1,12 @@
+{
+  "name": "@exercise-04/api",
+  "version": "1.0.0",
+  "description": "Starter API for access-token-system",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@exercise-02/web",
+  "version": "1.0.0",
+  "description": "Starter Web for session-auth",
+  "scripts": {
+    "dev": "next dev"
+  },
+  "dependencies": {
+    "next": "15.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}
