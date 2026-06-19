@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "pnpm --filter @auth/shared build && concurrently --names \"shared,api,web\" --prefix-colors \"cyan,green,blue\" \"pnpm --filter @auth/shared dev\" \"pnpm --filter @auth/api dev\" \"pnpm --filter @auth/web dev\"",
+    "dev:solution": "pnpm --filter @auth/shared build && concurrently --names \"shared,sol-api,sol-web\" --prefix-colors \"cyan,magenta,yellow\" \"pnpm --filter @auth/shared dev\" \"pnpm --filter @solution/api dev\" \"pnpm --filter @solution/web dev\"",
     "dev:api": "pnpm --filter @auth/shared build && pnpm --filter @auth/api dev",
     "dev:web": "pnpm --filter @auth/shared build && pnpm --filter @auth/web dev",
     "build": "pnpm --filter @auth/shared build && pnpm --filter @auth/api build && pnpm --filter @auth/web build",
